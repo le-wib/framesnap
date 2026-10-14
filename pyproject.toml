@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "framesnap"
+dynamic = ["version"]
+description = "Snap video clips to a clean, constant 24, 25, 30 or 60 fps."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+dependencies = ["pywebview>=6.0", "imageio-ffmpeg>=0.6.0", "numpy>=1.24", "opencv-python-headless>=4.8,<5"]
+
+[project.scripts]
+framesnap = "framesnap.app:main"
+framesnap-cli = "framesnap.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "framesnap.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["framesnap*"]
+
+[tool.setuptools.package-data]
+framesnap = ["ui/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

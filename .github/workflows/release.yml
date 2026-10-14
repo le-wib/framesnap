@@ -1,0 +1,81 @@
+name: Release builds
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15          # Apple Silicon
+            label: AppleSilicon
+          - runner: macos-15-intel    # Intel
+            label: Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run tests (informational, the selftest of the packaged app below is the gate)
+        continue-on-error: true
+        run: python -m pytest -q
+      - name: Build app and dmg (includes a selftest of the packaged app)
+        run: bash packaging/build_macos.sh "${{ matrix.label }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameSnap-macOS-${{ matrix.label }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run tests (informational on Windows, the selftest below is the gate)
+        continue-on-error: true
+        run: python -m pytest -q
+      - name: Build app, zip and installer (includes a selftest of the packaged app)
+        shell: pwsh
+        run: ./packaging/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameSnap-Windows
+          path: |
+            dist/FrameSnap-*-Windows.zip
+            dist/FrameSnap-*-Windows-Setup.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [macos, windows]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && (needs.macos.result == 'success' || needs.windows.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: FrameSnap-*
+          merge-multiple: true
+          path: release-files
+      - run: ls -la release-files
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          generate_release_notes: true

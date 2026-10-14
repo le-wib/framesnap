@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FrameSnap</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1013; --panel: #17181c; --line: #26282e; --text: #ececf0;
+    --muted: #8b8e99; --accent: #ff4a3d; --accent-ink: #fff; --ok: #5fd08a;
+    --warn: #e8b04a; --err: #ff6b6b; --tl: #050506; --sp1: #e8b04a; --sp2: #ff4a3d; --sp3: #d05fe0;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f5f5f7; --panel: #fff; --line: #e1e2e8; --text: #1b1c20;
+      --muted: #6d707c; --ok: #1f9d55; --warn: #b87a14; --err: #d63c3c; --tl: #15161a;
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+  }
+  .app { display: flex; flex-direction: column; min-height: 100%; padding: 18px 20px 16px; gap: 14px; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  header p { margin: 2px 0 0; color: var(--muted); }
+
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: 12px; padding: 18px 16px;
+    text-align: center; background: var(--panel); transition: border-color .15s, background .15s;
+  }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  .drop .title { font-size: 14px; font-weight: 550; }
+  .drop .sub { color: var(--muted); margin-top: 2px; }
+  .drop .actions { margin-top: 10px; display: flex; gap: 6px; justify-content: center; align-items: center; color: var(--muted); }
+
+  button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; }
+  .link { color: var(--accent); padding: 2px 4px; border-radius: 4px; }
+  .link:hover { text-decoration: underline; }
+  .link:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+
+  .lbl { display: block; color: var(--muted); margin-bottom: 6px; }
+  .seg { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 3px; padding: 3px;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .seg button { padding: 7px 0; border-radius: 7px; font-weight: 550; color: var(--muted); }
+  .seg button:hover:not(:disabled) { color: var(--text); }
+  .seg button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
+  .seg button:disabled { opacity: .5; cursor: default; }
+  .seg.small { grid-template-columns: repeat(3, 1fr); }
+  .seg.small button { padding: 5px 0; font-weight: 500; }
+  .hint { margin: 7px 2px 0; color: var(--muted); min-height: 2.9em; }
+
+  .modes { display: grid; gap: 6px; }
+  .modes button { display: grid; grid-template-columns: 18px 1fr; gap: 0 10px; width: 100%; text-align: left;
+                  padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); }
+  .modes button:hover:not(:disabled) { border-color: var(--muted); }
+  .modes .box { grid-row: 1 / span 2; margin-top: 2px; width: 16px; height: 16px; border-radius: 4px;
+                border: 1.5px solid var(--muted); display: grid; place-items: center; font-size: 11px; line-height: 1; color: transparent; }
+  .modes button[aria-checked="true"] { border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  .modes button[aria-checked="true"] .box { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .modes b { font-weight: 600; }
+  .modes span.d { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .modes button:disabled { opacity: .55; cursor: default; }
+
+  .opts { margin-top: 10px; display: grid; gap: 8px; }
+  .ropt { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 8px; }
+  .ropt > span { color: var(--muted); }
+  .chk { display: flex; align-items: center; gap: 7px; color: var(--muted); cursor: pointer; }
+  .chk input { accent-color: var(--accent); margin: 0; }
+  .chk .tx { color: var(--text); }
+  .names { color: var(--muted); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+           padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+           overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+  .gpuinfo { color: var(--muted); font-size: 12px; margin: 0 2px; }
+  .gpuinfo.good::before { content: "\25CF  "; color: var(--ok); }
+  .gpuinfo.cpu::before { content: "\25CF  "; color: var(--warn); }
+  .row2 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+  #list { list-style: none; margin: 0; padding: 0; flex: 1 1 262px; overflow-y: auto;
+          border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-height: 150px; }
+  #list:empty::before { content: attr(data-empty); display: block; padding: 22px 16px; color: var(--muted); text-align: center; }
+  #list li { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+             padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  #list li:last-child { border-bottom: 0; }
+  #list li.sel { background: color-mix(in srgb, var(--accent) 7%, var(--panel)); box-shadow: inset 3px 0 0 var(--accent); }
+  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .meta, .res { grid-column: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res { font-size: 12px; }
+  .res .ok { color: var(--ok); } .res .no { color: var(--warn); } .res .bad { color: var(--err); }
+  .status { grid-row: 1 / span 3; grid-column: 2; align-self: center; text-align: right; font-weight: 550; white-space: nowrap; }
+  .st-running, .st-analysing { color: var(--accent); }
+  .st-error { color: var(--err); }
+  .bar { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); width: 0; transition: width .2s; }
+  .rm { opacity: 0; margin-left: 6px; color: var(--muted); }
+  #list li:hover .rm { opacity: 1; }
+
+  /* ---- timeline box ---- */
+  .tlbox { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px 8px; }
+  .tlhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .tltitle { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .tlwrap { position: relative; }
+  #tlsvg { display: block; width: 100%; height: 124px; /* same as the viewBox height */ background: var(--tl); border-radius: 6px; cursor: crosshair; }
+  #tlsvg .sp1 { fill: var(--sp1); } #tlsvg .sp2 { fill: var(--sp2); } #tlsvg .sp3 { fill: var(--sp3); }
+  #tlsvg .motion { fill: #7f8390; opacity: .35; }
+  #tlsvg .base { stroke: #8a8d99; stroke-width: 1; }
+  #tlsvg .tick { stroke: #3a3d46; stroke-width: 1; }
+  #tlsvg text { fill: #8b8e99; font: 10px ui-monospace, Menlo, Consolas, monospace; }
+  #tlsvg .cursor { stroke: #fff; stroke-width: 1; opacity: .7; }
+  #tlsvg .vcursor { stroke: #5fd08a; stroke-width: 1.5; opacity: .9; }
+  .tip { position: absolute; top: 4px; pointer-events: none; padding: 3px 7px; border-radius: 6px; font-size: 11.5px;
+         background: #000; color: #fff; border: 1px solid #2c2f38; white-space: nowrap; display: none; }
+  .tlnote { color: var(--muted); padding: 30px 6px; text-align: center; }
+  .tlfoot { display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-top: 5px; }
+
+  /* ---- video preview ---- */
+  .preview-wrap {
+    margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    background: #000; position: relative; display: none;
+  }
+  .preview-wrap.visible { display: block; }
+  #preview {
+    display: block; width: 100%; max-height: 220px; object-fit: contain;
+    background: #000;
+  }
+  .preview-controls {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    background: color-mix(in srgb, #000 60%, var(--panel));
+  }
+  .preview-controls button {
+    color: var(--text); font-size: 15px; padding: 2px 6px; border-radius: 5px;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .preview-controls button:hover { border-color: var(--muted); }
+  #seekbar {
+    flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer;
+  }
+  .preview-time { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 70px; text-align: right; }
+
+  /* ---- flagged frame editor ---- */
+  .flageditor {
+    margin-top: 8px; display: none;
+  }
+  .flageditor.visible { display: block; }
+  .flageditor-head {
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--muted); font-size: 12px; margin-bottom: 5px;
+  }
+  .flageditor-head span { font-weight: 550; color: var(--text); }
+  #flagList {
+    list-style: none; margin: 0; padding: 0;
+    max-height: 120px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  }
+  #flagList li {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: 12px;
+  }
+  #flagList li:last-child { border-bottom: 0; }
+  #flagList li.hl { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+  .flag-frame { font-variant-numeric: tabular-nums; min-width: 48px; }
+  .flag-time { color: var(--muted); flex: 1; }
+  .flag-kind { font-size: 11px; padding: 1px 5px; border-radius: 4px; background: var(--line); }
+  .flag-kind.sp1 { background: color-mix(in srgb, var(--sp1) 20%, var(--panel)); color: var(--sp1); }
+  .flag-kind.sp2 { background: color-mix(in srgb, var(--sp2) 20%, var(--panel)); color: var(--sp2); }
+  .flag-kind.sp3 { background: color-mix(in srgb, var(--sp3) 20%, var(--panel)); color: var(--sp3); }
+  .flag-seek { color: var(--muted); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+  .flag-seek:hover { color: var(--text); background: var(--line); }
+  .flag-rm { color: var(--muted); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .flag-rm:hover { color: var(--err); background: color-mix(in srgb, var(--err) 12%, var(--panel)); }
+  .flag-add-row {
+    display: flex; align-items: center; gap: 6px; margin-top: 6px;
+  }
+  .flag-add-row input[type=number] {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font: inherit; width: 80px;
+    -webkit-appearance: none;
+  }
+  .flag-add-row input[type=number]:focus { outline: none; border-color: var(--accent); }
+  .flag-add-btn {
+    padding: 4px 10px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+    font-weight: 550;
+  }
+  .flag-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .flag-add-cur { color: var(--muted); font-size: 12px; padding: 4px 6px; border-radius: 6px; border: 1px solid transparent; }
+  .flag-add-cur:hover { border-color: var(--line); color: var(--text); }
+
+  footer { display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  #summary { color: var(--muted); min-height: 1.4em; text-align: right; }
+  .btns { display: flex; gap: 8px; }
+  .btn { padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); font-weight: 550; }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); flex: 1; }
+  .btn.primary.cancel { background: var(--panel); color: var(--text); border-color: var(--line); }
+  .btn.small { padding: 4px 10px; font-weight: 500; }
+  #error { color: var(--err); display: none; }
+  #error.show { display: block; }
+  #update-banner {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    background: var(--accent, #f59e0b);
+    color: #fff;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    margin-top: 6px;
+  }
+  #update-banner.visible { display: flex; }
+  #update-banner a {
+    color: #fff;
+    font-weight: 600;
+    text-decoration: underline;
+    margin-left: 6px;
+  }
+  #btn-check-update {
+    margin-top: 4px;
+    font-size: 14px;
+    color: var(--muted);
+    padding: 2px 6px;
+  }
+  #btn-check-update:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>FrameSnap</h1>
+    <p data-t="tagline"></p>
+    <div id="update-banner">
+      <span id="update-banner-text">Nouvelle version disponible</span>
+      <a id="update-banner-link" href="#" target="_blank">Telecharger</a>
+    </div>
+    <button id="btn-check-update" title="Verifier les mises a jour">&#x21BB;</button>
+  </header>
+
+  <div id="drop" class="drop">
+    <div class="title" data-t="drop_title"></div>
+    <div class="sub" data-t="drop_sub"></div>
+    <div class="actions">
+      <button id="pickFiles" class="link" data-t="pick_files"></button>
+      <span>/</span>
+      <button id="pickFolder" class="link" data-t="pick_folder"></button>
+    </div>
+  </div>
+
+  <section class="rate">
+    <label class="lbl" data-t="rate_label"></label>
+    <div class="seg" id="seg" role="radiogroup">
+      <button role="radio" data-mode="auto" data-t="auto"></button>
+      <button role="radio" data-mode="24">24</button>
+      <button role="radio" data-mode="25">25</button>
+      <button role="radio" data-mode="30">30</button>
+      <button role="radio" data-mode="60">60</button>
+    </div>
+    <p class="hint" id="hint"></p>
+  </section>
+
+  <section class="repair">
+    <label class="lbl" data-t="outputs_label"></label>
+    <div class="modes" id="repairModes" role="group">
+      <button role="checkbox" data-repair="off"><span class="box">&#10003;</span><b data-t="rp_off"></b><span class="d" data-t="rp_off_d"></span></button>
+      <button role="checkbox" data-repair="interpolate"><span class="box">&#10003;</span><b data-t="rp_interp"></b><span class="d" data-t="rp_interp_d"></span></button>
+      <button role="checkbox" data-repair="cut_keep"><span class="box">&#10003;</span><b data-t="rp_cutkeep"></b><span class="d" data-t="rp_cutkeep_d"></span></button>
+      <button role="checkbox" data-repair="cut_stretch"><span class="box">&#10003;</span><b data-t="rp_cutstretch"></b><span class="d" data-t="rp_cutstretch_d"></span></button>
+    </div>
+    <div class="opts">
+      <div class="ropt"><span data-t="sens_label"></span>
+        <div class="seg small" id="sensSeg" role="radiogroup">
+          <button role="radio" data-sens="strict" data-t="sens_strict"></button>
+          <button role="radio" data-sens="normal" data-t="sens_normal"></button>
+          <button role="radio" data-sens="loose" data-t="sens_loose"></button>
+        </div>
+      </div>
+      <div class="ropt" id="engineRow"><span data-t="engine_label"></span>
+        <div class="seg small" id="engineSeg" role="radiogroup">
+          <button role="radio" data-engine="auto" data-t="engine_auto"></button>
+          <button role="radio" data-engine="gpu" data-t="engine_gpu"></button>
+          <button role="radio" data-engine="cpu" data-t="engine_cpu"></button>
+        </div>
+      </div>
+      <div class="gpuinfo" id="gpuInfo"></div>
+      <label class="chk"><input type="checkbox" id="suffix"><span class="tx" data-t="suffix_label"></span></label>
+      <div class="names" id="names"></div>
+      <div class="row2">
+        <label class="chk"><input type="checkbox" id="autoan"><span data-t="autoan_label"></span></label>
+        <button id="analyseNow" class="btn small" data-t="analyse_now"></button>
+      </div>
+    </div>
+  </section>
+
+  <ul id="list"></ul>
+
+  <section class="tlbox" id="tlbox">
+    <div class="tlhead"><span class="tltitle" id="tltitle"></span><span class="legend" id="tllegend"></span></div>
+    <div id="tlbody"></div>
+
+    <!-- video preview -->
+    <div class="preview-wrap" id="previewWrap">
+<video id="preview" controls controlsList="nodownload" preload="metadata" crossorigin="anonymous"></video>
+      <div class="preview-controls">
+        <button id="playPause" title="Play/Pause">&#9654;</button>
+        <input type="range" id="seekbar" min="0" max="1000" value="0" step="1">
+        <span class="preview-time" id="previewTime">0:00 / 0:00</span>
+      </div>
+    </div>
+
+    <!-- flagged frame editor -->
+    <div class="flageditor" id="flagEditor">
+      <div class="flageditor-head">
+        <span data-t="flags_title"></span>
+        <span id="flagCount" style="color:var(--muted)"></span>
+      </div>
+      <ul id="flagList"></ul>
+      <div class="flag-add-row">
+        <input type="number" id="flagInput" min="1" placeholder="#" data-t-placeholder="flag_input_ph">
+        <button class="flag-add-btn" id="flagAddBtn" data-t="flag_add"></button>
+        <button class="flag-add-cur" id="flagAddCur" data-t="flag_add_cur"></button>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div id="error"></div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="skip"><span data-t="skip_existing"></span></label>
+      <span id="summary"></span>
+    </div>
+    <div class="btns">
+      <button id="clear" class="btn" data-t="clear"></button>
+      <button id="open" class="btn" data-t="open"></button>
+      <button id="go" class="btn primary"></button>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var I18N = {
+    en: {
+      tagline: "Snap clips to a clean, constant frame rate.",
+      drop_title: "Drop a clip or a folder here", drop_sub: ".mp4  .mov  .m4v",
+      pick_files: "Choose clips", pick_folder: "Choose a folder",
+      rate_label: "Target frame rate", auto: "Auto",
+      hint_auto: "Detects each clip's rate and snaps it to the nearest standard (24, 25, 30 or 60). Clips far from those are left alone.",
+      hint_manual: "Every clip becomes {n} fps. Close rates are retimed without losing a frame, others are converted keeping the duration.",
+      outputs_label: "Outputs (tick one or several, each clip is written once per output)",
+      rp_off: "Frame rate only", rp_off_d: "Only the frame rate is fixed. Held frames are not touched.",
+      rp_interp: "Interpolate (recommended)",
+      rp_interp_d: "Each held frame is replaced by a new in-between frame computed by motion analysis (AI on the GPU when available). Duration, frame count and sound stay identical, so lip sync is safe.",
+      rp_cutkeep: "Cut, keep the sound",
+      rp_cutkeep_d: "Held frames are removed, so the picture gets shorter. The sound stays whole; a green screen \"VIDEO SHORTER THAN SOUNDTRACK\" fills the end.",
+      rp_cutstretch: "Cut, speed the sound up",
+      rp_cutstretch_d: "Held frames are removed and the sound is sped up to the new length without changing its pitch. Sound drifts slightly from the picture inside the clip: avoid for dialogue.",
+      sens_label: "Detection", sens_strict: "Strict", sens_normal: "Normal", sens_loose: "Wide",
+      engine_label: "Engine", engine_auto: "Auto", engine_gpu: "GPU", engine_cpu: "CPU",
+      gpu_checking: "Looking for a GPU...",
+      gpu_ok: "GPU found: {d}. Missing frames are computed with RIFE (AI).",
+      gpu_none: "No usable GPU: missing frames are computed on the CPU (slower, a bit less accurate on fast motion).",
+      suffix_label: "Add a suffix to the file name",
+      names_same: "File name: {n}", names_suffix: "File names: {n}",
+      names_folders: "No suffix and several outputs: one folder per output. {n}",
+      autoan_label: "Analyse as soon as clips are imported", analyse_now: "Analyse",
+      skip_existing: "Skip clips already recoded",
+      clear: "Clear", open: "Open recoded", go: "Recode", go_again: "Recode again", cancel: "Cancel",
+      empty: "No clip yet",
+      probing: "Reading...", queued: "Waiting", running: "{p}%", analysing: "Analysis {p}%",
+      error: "Error", an_off: "analysis off", an_skip: "",
+      act_retime: "snapped to {t}", act_resample: "converted to {t}", act_copy: "already {t}",
+      act_skip: "not close to 24, 25, 30 or 60",
+      dups_n: "{n} held frames ({p}%)", dups_1: "1 held frame ({p}%)", dups_0: "no held frame", fps: "fps", remove: "Remove",
+      v_off: "rate", v_interpolate: "inter", v_cut_keep: "keep", v_cut_stretch: "speed",
+      r_done: "done", r_copied: "already clean", r_skipped: "left alone", r_exists: "already there",
+      r_error: "error", r_cancelled: "cancelled",
+      sum_clips: "{n} clips", sum_dups: "{d} held frames in total", sum_done: "{d} outputs written",
+      tl_title: "Held frames timeline", tl_select: "Select a clip to see its timeline.",
+      tl_wait: "Analysis in progress: {p}%", tl_none: "Analysis is off. Press Analyse.",
+      tl_skip: "This clip is not close to 24, 25, 30 or 60 fps: no analysis in Auto mode.",
+      tl_err: "The analysis failed.", tl_nodups: "No held frame found.",
+      lg_double: "double", lg_triple: "triple", lg_more: "4 and more",
+      tip_frame: "frame {f}  |  {t}", tip_double: "shown twice", tip_triple: "shown 3 times", tip_more: "shown {k} times",
+      tl_foot: "{n} frames  |  {s} s  |  {fps} fps",
+      /* new */
+      flags_title: "Held frames", flag_add: "Add", flag_add_cur: "Add current frame",
+      flag_input_ph: "frame #",
+      flag_tip_seek: "Go to frame", flag_tip_rm: "Remove",
+      tl_click: "Click on the timeline to seek"
+    },
+    fr: {
+      tagline: "Ramenez vos clips à une cadence propre et constante.",
+      drop_title: "Déposez un clip ou un dossier ici", drop_sub: ".mp4  .mov  .m4v",
+      pick_files: "Choisir des clips", pick_folder: "Choisir un dossier",
+      rate_label: "Cadence cible", auto: "Auto",
+      hint_auto: "Détecte la cadence de chaque clip et l'arrondit au standard le plus proche (24, 25, 30 ou 60). Les clips trop éloignés sont laissés tels quels.",
+      hint_manual: "Tous les clips passent à {n} fps. Une cadence proche est retimée sans perdre d'image, les autres sont converties en gardant la durée.",
+      outputs_label: "Sorties (cochez-en une ou plusieurs, chaque clip est écrit une fois par sortie)",
+      rp_off: "Cadence seule", rp_off_d: "Seule la cadence est corrigée. Les images dupliquées ne sont pas touchées.",
+      rp_interp: "Interpoler (recommandé)",
+      rp_interp_d: "Chaque image copiée est remplacée par une image intermédiaire calculée par analyse du mouvement (IA sur le GPU quand il y en a un). Durée, nombre d'images et son restent identiques : la synchro des voix ne bouge pas.",
+      rp_cutkeep: "Couper, son intact",
+      rp_cutkeep_d: "Les images copiées sont supprimées : la vidéo raccourcit. Le son reste entier ; un écran vert « VIDEO SHORTER THAN SOUNDTRACK » comble la fin.",
+      rp_cutstretch: "Couper, son accéléré",
+      rp_cutstretch_d: "Les images copiées sont supprimées et le son est accéléré à la nouvelle durée, sans changer sa hauteur. Le son se décale un peu de l'image en cours de clip : à éviter pour les dialogues.",
+      sens_label: "Détection", sens_strict: "Stricte", sens_normal: "Normale", sens_loose: "Large",
+      engine_label: "Moteur", engine_auto: "Auto", engine_gpu: "GPU", engine_cpu: "CPU",
+      gpu_checking: "Recherche d'un GPU...",
+      gpu_ok: "GPU détecté : {d}. Les images manquantes sont calculées avec RIFE (IA).",
+      gpu_none: "Pas de GPU utilisable : les images manquantes sont calculées sur le processeur (plus lent, un peu moins précis sur les mouvements rapides).",
+      suffix_label: "Ajouter un suffixe au nom du fichier",
+      names_same: "Nom du fichier : {n}", names_suffix: "Noms des fichiers : {n}",
+      names_folders: "Sans suffixe et avec plusieurs sorties : un dossier par sortie. {n}",
+      autoan_label: "Analyser dès l'import des clips", analyse_now: "Analyser",
+      skip_existing: "Ignorer les clips déjà recodés",
+      clear: "Vider", open: "Ouvrir recoded", go: "Recoder", go_again: "Recoder à nouveau", cancel: "Annuler",
+      empty: "Aucun clip pour l'instant",
+      probing: "Lecture...", queued: "En attente", running: "{p} %", analysing: "Analyse {p} %",
+      error: "Erreur", an_off: "analyse désactivée", an_skip: "",
+      act_retime: "ajusté à {t}", act_resample: "converti en {t}", act_copy: "déjà en {t}",
+      act_skip: "loin de 24, 25, 30 ou 60",
+      dups_n: "{n} images copiées ({p} %)", dups_1: "1 image copiée ({p} %)", dups_0: "aucune image copiée", fps: "fps", remove: "Retirer",
+      v_off: "cadence", v_interpolate: "inter", v_cut_keep: "keep", v_cut_stretch: "speed",
+      r_done: "fait", r_copied: "déjà propre", r_skipped: "laissé tel quel", r_exists: "déjà présent",
+      r_error: "erreur", r_cancelled: "annulé",
+      sum_clips: "{n} clips", sum_dups: "{d} images copiées au total", sum_done: "{d} sorties écrites",
+      tl_title: "Timeline des images copiées", tl_select: "Sélectionnez un clip pour voir sa timeline.",
+      tl_wait: "Analyse en cours : {p} %", tl_none: "Analyse désactivée. Cliquez sur Analyser.",
+      tl_skip: "Ce clip est loin de 24, 25, 30 ou 60 fps : pas d'analyse en mode Auto.",
+      tl_err: "L'analyse a échoué.", tl_nodups: "Aucune image copiée trouvée.",
+      lg_double: "double", lg_triple: "triple", lg_more: "4 et plus",
+      tip_frame: "image {f}  |  {t}", tip_double: "montrée 2 fois", tip_triple: "montrée 3 fois", tip_more: "montrée {k} fois",
+      tl_foot: "{n} images  |  {s} s  |  {fps} fps",
+      /* new */
+      flags_title: "Images copiées", flag_add: "Ajouter", flag_add_cur: "Ajouter l'image courante",
+      flag_input_ph: "n° d'image",
+      flag_tip_seek: "Aller à l'image", flag_tip_rm: "Supprimer",
+      tl_click: "Cliquez sur la timeline pour naviguer"
+    }
+  };
+  var lang = /^fr/i.test(navigator.language || "") ? "fr" : "en";
+  var T = I18N[lang];
+  var ORDER = ["off", "interpolate", "cut_keep", "cut_stretch"];
+  var DEFAULT_REPAIR = {
+    modes: ["off"], sensitivity: "normal", engine: "auto", gpu: { checked: false },
+    suffix: false, auto_analyse: true,
+    suffixes: { off: "_recode", interpolate: "_recode-inter", cut_keep: "_recode-keep", cut_stretch: "_recode-speed" },
+    folders: { off: "cadence", interpolate: "inter", cut_keep: "keep", cut_stretch: "speed" }
+  };
+  var state = { mode: "auto", running: false, items: [], skip_existing: true, error: "", repair: DEFAULT_REPAIR };
+  var selId = null;
+  var tlCache = {};
+  var tlLoading = {};
+  var lastShowTip = null;
+
+  // ---- preview video state ----
+  var previewIid = null;   // which iid the <video> is loaded for
+  var previewFps = 24;     // fps of the currently loaded clip
+  var previewTl = null;    // current timeline data
+  var vcursor = null;      // the green SVG cursor element
+  var seekTimer = null;
+
+  function $(id) { return document.getElementById(id); }
+  function fmt(s, o) { return s.replace(/\{(\w+)\}/g, function (_, k) { return o && o[k] != null ? o[k] : ""; }); }
+  function num(x, d) {
+    try { return new Intl.NumberFormat(lang, { maximumFractionDigits: d == null ? 3 : d }).format(x); }
+    catch (e) { return String(x); }
+  }
+  function api() { return window.pywebview && window.pywebview.api; }
+  function call(name) {
+    var a = api(); if (!a || !a[name]) return;
+    return a[name].apply(a, Array.prototype.slice.call(arguments, 1));
+  }
+  function rep() {
+    var r = state.repair || {}, out = {};
+    Object.keys(DEFAULT_REPAIR).forEach(function (k) { out[k] = r[k] != null ? r[k] : DEFAULT_REPAIR[k]; });
+    return out;
+  }
+  function applyI18n() {
+    document.documentElement.lang = lang;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-t]"), function (el) {
+      var v = T[el.getAttribute("data-t")]; if (v != null) el.textContent = v;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-t-placeholder]"), function (el) {
+      var v = T[el.getAttribute("data-t-placeholder")]; if (v != null) el.placeholder = v;
+    });
+    $("list").setAttribute("data-empty", T.empty);
+  }
+  function fmtTime(sec) {
+    var m = Math.floor(sec / 60), s = sec - m * 60;
+    return m > 0 ? m + ":" + (s < 10 ? "0" : "") + num(s, 2) : num(s, 2) + " s";
+  }
+
+  // ------------------------------------------------------------- list
+  function planText(it) {
+    if (it.action === "skip") return T.act_skip;
+    if (it.action && it.target) return fmt(T["act_" + it.action] || "", { t: it.target + " " + T.fps });
+    return "";
+  }
+  function dupText(it) {
+    if (it.analysis === "running") return fmt(T.analysing, { p: Math.round(it.analysis_pct || 0) });
+    if (it.analysis === "off") return T.an_off;
+    if (it.analysis === "done" && it.dups != null) {
+      if (it.dups === 1) return fmt(T.dups_1, { p: num(it.dup_pct, 1) });
+      return it.dups > 0 ? fmt(T.dups_n, { n: it.dups, p: num(it.dup_pct, 1) }) : T.dups_0;
+    }
+    return "";
+  }
+  function itemMeta(it) {
+    if (it.status === "probing") return "";
+    if (it.status === "error") return it.message || "";
+    var parts = [];
+    if (it.fps) parts.push(num(it.fps) + " " + T.fps);
+    var p = planText(it); if (p) parts.push(p);
+    var d = dupText(it); if (d) parts.push(d);
+    return parts.join("  \u00b7  ");
+  }
+  function statusLabel(it) {
+    if (it.status === "probing") return T.probing;
+    if (it.status === "queued") return T.queued;
+    if (it.status === "running") return fmt(T.running, { p: Math.round(it.pct || 0) });
+    if (it.status === "error") return T.error;
+    return "";
+  }
+  function resultNodes(it) {
+    var wrap = document.createElement("div");
+    wrap.className = "res";
+    (it.results || []).forEach(function (r, i) {
+      if (i) wrap.appendChild(document.createTextNode("  \u00b7  "));
+      var cls = (r.status === "done" || r.status === "copied") ? "ok" : (r.status === "error" ? "bad" : "no");
+      var sp = document.createElement("span");
+      sp.className = cls;
+      var label = T["v_" + r.variant] || r.variant;
+      var txt = ((cls === "ok") ? "\u2713 " : "") + label + ": " + (T["r_" + r.status] || r.status);
+      if (r.backend) txt += " (" + r.backend + ")";
+      sp.textContent = txt;
+      if (r.status === "error" && r.message) sp.title = r.message;
+      wrap.appendChild(sp);
+    });
+    return wrap;
+  }
+
+  function renderList() {
+    var ul = $("list");
+    ul.textContent = "";
+    state.items.forEach(function (it) {
+      var li = document.createElement("li");
+      li.setAttribute("data-id", it.id);
+      if (it.id === selId) li.className = "sel";
+      var name = document.createElement("div");
+      name.className = "name"; name.textContent = it.name; name.title = it.name;
+      var meta = document.createElement("div");
+      meta.className = "meta"; meta.textContent = itemMeta(it);
+      var st = document.createElement("div");
+      st.className = "status st-" + (it.status === "running" ? "running" : (it.status === "error" ? "error" : ""));
+      st.textContent = statusLabel(it);
+      if (!state.running) {
+        var rm = document.createElement("button");
+        rm.className = "rm"; rm.textContent = "\u00d7"; rm.title = T.remove;
+        rm.addEventListener("click", function (e) { e.stopPropagation(); call("remove", it.id); });
+        st.appendChild(rm);
+      }
+      var bar = document.createElement("div");
+      bar.className = "bar";
+      bar.style.width = (it.status === "running" ? (it.pct || 0) : 0) + "%";
+      li.appendChild(name); li.appendChild(meta); li.appendChild(resultNodes(it)); li.appendChild(st); li.appendChild(bar);
+      li.addEventListener("click", function () { select(it.id); });
+      ul.appendChild(li);
+    });
+  }
+
+  // --------------------------------------------------------- timeline
+  function selected() {
+    for (var i = 0; i < state.items.length; i++) if (state.items[i].id === selId) return state.items[i];
+    return null;
+  }
+  function select(id) {
+    selId = id;
+    renderList();
+    renderTimeline();
+    loadPreview(id);
+  }
+  function ensureTimeline(it) {
+    if (!it || it.analysis !== "done") return;
+    var c = tlCache[it.id];
+    if ((c && c.v === it.tl_v) || tlLoading[it.id] === it.tl_v) return;
+    var p = call("get_timeline", it.id);
+    if (!p || !p.then) return;
+    tlLoading[it.id] = it.tl_v;
+    // the answer is cached even when empty, otherwise "no data" would be asked for again and again
+    p.then(function (data) {
+      delete tlLoading[it.id];
+      tlCache[it.id] = { v: it.tl_v, data: data || null };
+      renderTimeline();
+    }, function () {
+      delete tlLoading[it.id];
+      tlCache[it.id] = { v: it.tl_v, data: null };
+      renderTimeline();
+    });
+  }
+  var NS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(NS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+    return e;
+  }
+  function niceStep(seconds) {
+    var steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800];
+    for (var i = 0; i < steps.length; i++) if (seconds / steps[i] <= 8) return steps[i];
+    return 3600;
+  }
+  function runKind(len) { return len === 1 ? 1 : (len === 2 ? 2 : 3); }
+
+  function renderTimeline() {
+    var it = selected();
+    $("tltitle").textContent = it ? it.name : T.tl_title;
+    var legend = $("tllegend"); legend.textContent = "";
+    var body = $("tlbody"); body.textContent = "";
+    vcursor = null;
+    function note(txt) { var d = document.createElement("div"); d.className = "tlnote"; d.textContent = txt; body.appendChild(d); }
+    if (!it) { note(T.tl_select); renderFlagEditor(null, null); return; }
+    if (it.analysis === "running" || it.analysis === "pending") { note(fmt(T.tl_wait, { p: Math.round(it.analysis_pct || 0) })); renderFlagEditor(null, null); return; }
+    if (it.analysis === "off") { note(T.tl_none); renderFlagEditor(null, null); return; }
+    if (it.analysis === "skip") { note(T.tl_skip); renderFlagEditor(null, null); return; }
+    if (it.analysis === "error") { note(T.tl_err); renderFlagEditor(null, null); return; }
+    var c = tlCache[it.id];
+    if (!c || c.v !== it.tl_v) { ensureTimeline(it); note(fmt(T.tl_wait, { p: 100 })); renderFlagEditor(null, null); return; }
+    if (!c.data) { note(T.tl_err); renderFlagEditor(null, null); return; }
+    var tl = c.data;
+    previewTl = tl;
+    previewFps = tl.fps || 24;
+    var W = Math.max(300, Math.round(body.clientWidth || 560)), H = 124, top = 20, bot = 112, ph = bot - top;
+
+    [["double", "sp1"], ["triple", "sp2"], ["more", "sp3"]].forEach(function (x) {
+      var s = document.createElement("span");
+      var i = document.createElement("i"); i.style.background = "var(--" + x[1] + ")";
+      s.appendChild(i);
+      s.appendChild(document.createTextNode(T["lg_" + x[0].trim()] + " " + ((tl.counts || {})[x[0].trim()] || 0)));
+      legend.appendChild(s);
+    });
+
+    var wrap = document.createElement("div"); wrap.className = "tlwrap";
+    var svg = svgEl("svg", { id: "tlsvg", viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "xMinYMin meet" });
+    // ruler
+    var step = niceStep(tl.seconds || 1);
+    for (var t = 0; t <= tl.seconds + 1e-6; t += step) {
+      var x = Math.round(t / tl.seconds * W * 10) / 10;
+      svg.appendChild(svgEl("line", { class: "tick", x1: x, x2: x, y1: 0, y2: top - 4 }));
+      var lab = svgEl("text", { x: Math.min(x + 3, W - 40), y: 12 }); lab.textContent = fmtTime(t);
+      svg.appendChild(lab);
+    }
+    // motion curve (context)
+    if (tl.motion && tl.motion.length && tl.peak > 0) {
+      var d = "M0," + bot;
+      tl.motion.forEach(function (m, k) {
+        var xx = ((k * tl.bin + 1) / tl.n * W).toFixed(1);
+        var h = Math.min(1, m / tl.peak) * ph * 0.35;
+        d += " L" + xx + "," + (bot - h).toFixed(1);
+      });
+      d += " L" + W + "," + bot + " Z";
+      svg.appendChild(svgEl("path", { class: "motion", d: d }));
+    }
+    svg.appendChild(svgEl("line", { class: "base", x1: 0, x2: W, y1: bot, y2: bot }));
+    // held frame spikes
+    var barW = Math.max(2, W / tl.n);
+    (tl.runs || []).forEach(function (r) {
+      var kind = runKind(r[1]);
+      var h = ph * (kind === 1 ? 0.55 : (kind === 2 ? 0.8 : 1));
+      svg.appendChild(svgEl("rect", { class: "sp" + kind, "data-frame": r[0], "data-len": r[1],
+        x: (r[0] / tl.n * W - barW / 2).toFixed(1), y: (bot - h).toFixed(1), width: barW.toFixed(1), height: h.toFixed(1) }));
+    });
+    // hover cursor (white)
+    var cursor = svgEl("line", { class: "cursor", x1: 0, x2: 0, y1: top, y2: bot, style: "display:none" });
+    svg.appendChild(cursor);
+    // video position cursor (green)
+    vcursor = svgEl("line", { class: "vcursor", x1: 0, x2: 0, y1: 0, y2: H, style: "display:none" });
+    svg.appendChild(vcursor);
+
+    var tip = document.createElement("div"); tip.className = "tip"; tip.id = "tltip";
+    function showTip(frac) {
+      var r = svg.getBoundingClientRect(), w = r.width || 1;
+      var info = describeAt(tl, frac);
+      cursor.setAttribute("x1", frac * W); cursor.setAttribute("x2", frac * W); cursor.style.display = "";
+      tip.textContent = info.text; tip.style.display = "block";
+      tip.style.left = Math.min(Math.max(0, frac * w - 60), Math.max(0, w - 170)) + "px";
+    }
+    lastShowTip = showTip;
+
+    // click on timeline -> seek video
+    svg.addEventListener("click", function (e) {
+      var r = svg.getBoundingClientRect(), w = r.width || 1;
+      var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / w));
+      var vid = $("preview");
+      if (vid && vid.src && vid.duration) {
+        vid.currentTime = frac * vid.duration;
+      }
+    });
+
+    svg.addEventListener("mousemove", function (e) {
+      var r = svg.getBoundingClientRect(), w = r.width || 1;
+      showTip(Math.max(0, Math.min(1, (e.clientX - r.left) / w)));
+    });
+    svg.addEventListener("mouseleave", function () { tip.style.display = "none"; cursor.style.display = "none"; });
+    wrap.appendChild(svg); wrap.appendChild(tip); body.appendChild(wrap);
+    var foot = document.createElement("div"); foot.className = "tlfoot";
+    var a = document.createElement("span");
+    a.textContent = fmt(T.tl_foot, { n: tl.n, s: num(tl.seconds, 2), fps: num(tl.fps, 3) });
+    foot.appendChild(a);
+    if (!(tl.runs || []).length) { var b = document.createElement("span"); b.textContent = T.tl_nodups; foot.appendChild(b); }
+    body.appendChild(foot);
+
+    // collect flagged list from runs
+    renderFlagEditor(it, tl);
+  }
+
+  // frame under the mouse and the held run next to it
+  function describeAt(tl, frac) {
+    var f = Math.max(0, Math.min(tl.n - 1, Math.round(frac * tl.n)));
+    var tol = Math.max(1, Math.round(tl.n * 0.004));
+    var best = null;
+    (tl.runs || []).forEach(function (r) {
+      var lo = r[0] - tol, hi = r[0] + r[1] - 1 + tol;
+      if (f >= lo && f <= hi) best = best || r;
+    });
+    var text = fmt(T.tip_frame, { f: f, t: fmtTime(f / tl.fps) });
+    if (best) {
+      var k = best[1] + 1;
+      text += "  |  " + (k === 2 ? T.tip_double : (k === 3 ? T.tip_triple : fmt(T.tip_more, { k: k })));
+      text += " (" + best[0] + ")";
+    }
+    return { frame: f, run: best, text: text };
+  }
+
+  // --------------------------------------------------------- flag editor
+  function flatFlagged(tl) {
+    // expand runs -> sorted list of flagged frame indices
+    var out = [];
+    (tl.runs || []).forEach(function (r) {
+      for (var i = 0; i < r[1]; i++) out.push(r[0] + i);
+    });
+    return out;
+  }
+
+  function kindClass(tl, frameIdx) {
+    // which run does this frame belong to?
+    for (var i = 0; i < (tl.runs || []).length; i++) {
+      var r = tl.runs[i];
+      if (frameIdx >= r[0] && frameIdx < r[0] + r[1]) {
+        return r[1] === 1 ? "sp1" : (r[1] === 2 ? "sp2" : "sp3");
+      }
+    }
+    return "";
+  }
+  function kindLabel(tl, frameIdx) {
+    for (var i = 0; i < (tl.runs || []).length; i++) {
+      var r = tl.runs[i];
+      if (frameIdx >= r[0] && frameIdx < r[0] + r[1]) {
+        var k = r[1] + 1;
+        return k === 2 ? "x2" : (k === 3 ? "x3" : "x" + k);
+      }
+    }
+    return "x2";
+  }
+
+  function renderFlagEditor(it, tl) {
+    var ed = $("flagEditor");
+    var fl = $("flagList");
+    var fc = $("flagCount");
+    if (!it || !tl) {
+      ed.classList.remove("visible");
+      fl.textContent = "";
+      fc.textContent = "";
+      return;
+    }
+    ed.classList.add("visible");
+    var flags = flatFlagged(tl);
+    fc.textContent = flags.length;
+
+    // determine which frame is "current" in the video
+    var vid = $("preview");
+    var curFrame = (vid && vid.duration && previewFps)
+      ? Math.round(vid.currentTime * previewFps) : -1;
+
+    fl.textContent = "";
+    if (!flags.length) {
+      var empty = document.createElement("li");
+      empty.style.color = "var(--muted)";
+      empty.style.justifyContent = "center";
+      empty.textContent = T.tl_nodups;
+      fl.appendChild(empty);
+    } else {
+      flags.forEach(function (f) {
+        var li = document.createElement("li");
+        if (f === curFrame) li.className = "hl";
+        var fspan = document.createElement("span"); fspan.className = "flag-frame";
+        fspan.textContent = "#" + f;
+        var tspan = document.createElement("span"); tspan.className = "flag-time";
+        tspan.textContent = fmtTime(f / tl.fps);
+        var kspan = document.createElement("span");
+        kspan.className = "flag-kind " + kindClass(tl, f);
+        kspan.textContent = kindLabel(tl, f);
+        var seekBtn = document.createElement("button");
+        seekBtn.className = "flag-seek"; seekBtn.title = T.flag_tip_seek;
+        seekBtn.textContent = "\u25B6";
+        (function (frame) {
+          seekBtn.addEventListener("click", function () { seekToFrame(frame); });
+        })(f);
+        var rmBtn = document.createElement("button");
+        rmBtn.className = "flag-rm"; rmBtn.title = T.flag_tip_rm;
+        rmBtn.textContent = "\u00d7";
+        (function (frame, iid) {
+          rmBtn.addEventListener("click", function () { removeFlag(iid, frame, tl); });
+        })(f, it.id);
+        li.appendChild(fspan); li.appendChild(tspan); li.appendChild(kspan);
+        li.appendChild(seekBtn); li.appendChild(rmBtn);
+        fl.appendChild(li);
+      });
+    }
+
+    // "Add current frame" button: enable only when video is loaded
+    var addCurBtn = $("flagAddCur");
+    var vid2 = $("preview");
+    addCurBtn.disabled = !(vid2 && vid2.src && vid2.duration);
+  }
+
+  function getCurrentVideoFrame() {
+    var vid = $("preview");
+    if (!vid || !vid.src || !vid.duration) return -1;
+    return Math.round(vid.currentTime * previewFps);
+  }
+
+  function addFlag(iid, frame, currentTl) {
+    if (frame < 1) return;
+    var flags = flatFlagged(currentTl);
+    if (flags.indexOf(frame) >= 0) return;  // already there
+    flags.push(frame);
+    flags.sort(function (a, b) { return a - b; });
+    var p = call("set_flags", iid, flags);
+    if (!p || !p.then) return;
+    p.then(function (newTl) {
+      if (!newTl) return;
+      var it = selected();
+      if (!it) return;
+      tlCache[it.id] = { v: it.tl_v, data: newTl };
+      previewTl = newTl;
+      renderTimeline();
+    });
+  }
+
+  function removeFlag(iid, frame, currentTl) {
+    var flags = flatFlagged(currentTl).filter(function (f) { return f !== frame; });
+    var p = call("set_flags", iid, flags);
+    if (!p || !p.then) return;
+    p.then(function (newTl) {
+      if (!newTl) return;
+      var it = selected();
+      if (!it) return;
+      tlCache[it.id] = { v: it.tl_v, data: newTl };
+      previewTl = newTl;
+      renderTimeline();
+    });
+  }
+
+  // "Add" button
+  $("flagAddBtn").addEventListener("click", function () {
+    var it = selected();
+    if (!it || !previewTl) return;
+    var val = parseInt($("flagInput").value, 10);
+    if (isNaN(val) || val < 1) return;
+    addFlag(it.id, val, previewTl);
+    $("flagInput").value = "";
+  });
+  $("flagInput").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") $("flagAddBtn").click();
+  });
+
+  // "Add current frame" button
+  $("flagAddCur").addEventListener("click", function () {
+    var it = selected();
+    if (!it || !previewTl) return;
+    var f = getCurrentVideoFrame();
+    if (f < 1) return;
+    addFlag(it.id, f, previewTl);
+  });
+
+  // --------------------------------------------------------- video preview
+  function loadPreview(iid) {
+    var vid = $("preview");
+    var wrap = $("previewWrap");
+    if (!iid) {
+      wrap.classList.remove("visible");
+      vid.src = "";
+      previewIid = null;
+      return;
+    }
+    if (previewIid === iid) return;  // already loaded
+    previewIid = iid;
+    var p = call("get_video_path", iid);
+    if (!p || !p.then) { wrap.classList.remove("visible"); return; }
+    p.then(function (url) {
+      if (!url) { wrap.classList.remove("visible"); return; }
+      vid.src = url;
+      vid.load();
+      wrap.classList.add("visible");
+    });
+  }
+
+  function seekToFrame(frame) {
+    var vid = $("preview");
+    if (!vid || !vid.duration) return;
+    vid.currentTime = frame / previewFps;
+  }
+
+  // play/pause button
+  $("playPause").addEventListener("click", function () {
+    var vid = $("preview");
+    if (!vid || !vid.src) return;
+    if (vid.paused) vid.play(); else vid.pause();
+  });
+
+  // seekbar -> video
+  $("seekbar").addEventListener("input", function () {
+    var vid = $("preview");
+    if (!vid || !vid.duration) return;
+    vid.currentTime = (parseInt(this.value, 10) / 1000) * vid.duration;
+  });
+
+  var vid = $("preview");
+
+  // video -> seekbar + time display + green cursor + flag list highlight
+  function onVideoTimeUpdate() {
+    var vid = $("preview");
+    if (!vid) return;
+    var t = vid.currentTime, dur = vid.duration || 1;
+    $("seekbar").value = Math.round((t / dur) * 1000);
+    $("previewTime").textContent = fmtTime(t) + " / " + fmtTime(dur);
+    $("playPause").textContent = vid.paused ? "\u25B6" : "\u23F8";
+
+    // update green vcursor on the SVG timeline
+    if (vcursor && previewTl && previewTl.seconds) {
+      var frac = t / previewTl.seconds;
+      var W = parseFloat(vcursor.closest("svg") ? vcursor.closest("svg").getAttribute("viewBox").split(" ")[2] : 560);
+      vcursor.setAttribute("x1", frac * W);
+      vcursor.setAttribute("x2", frac * W);
+      vcursor.style.display = "";
+    }
+
+    // highlight current frame in flag list (throttled to animation frame)
+    if (previewTl) {
+      var curFrame = Math.round(t * previewFps);
+      var items = $("flagList").querySelectorAll("li");
+      Array.prototype.forEach.call(items, function (li, idx) {
+        var flags = previewTl ? flatFlagged(previewTl) : [];
+        li.classList.toggle("hl", flags[idx] === curFrame);
+      });
+    }
+  }
+  vid.addEventListener("timeupdate", onVideoTimeUpdate);
+  vid.addEventListener("play", onVideoTimeUpdate);
+  vid.addEventListener("pause", onVideoTimeUpdate);
+  vid.addEventListener("loadedmetadata", function () {
+    onVideoTimeUpdate();
+    var it = selected();
+    renderFlagEditor(it, previewTl);
+  });
+
+  // ------------------------------------------------------- the rest
+  function namesPreview(r) {
+    var it = selected() || state.items[0];
+    var base = it ? it.name.replace(/^.*[\\\/]/, "") : "clip.mp4";
+    var dot = base.lastIndexOf("."), stem = dot > 0 ? base.slice(0, dot) : base, ext = dot > 0 ? base.slice(dot) : "";
+    var modes = ORDER.filter(function (m) { return r.modes.indexOf(m) >= 0; });
+    var lines = modes.map(function (m) {
+      if (r.suffix) return stem + r.suffixes[m] + ext;
+      return modes.length > 1 ? r.folders[m] + "/" + base : base;
+    });
+    var joined = lines.join("   ");
+    if (r.suffix) return fmt(modes.length > 1 ? T.names_suffix : T.names_same, { n: joined });
+    return modes.length > 1 ? fmt(T.names_folders, { n: joined }) : fmt(T.names_same, { n: joined });
+  }
+
+  function render(s) {
+    if (s) state = s;
+    var r = rep();
+    if (selId == null || !state.items.some(function (i) { return i.id === selId; })) {
+      var newId = state.items.length ? state.items[0].id : null;
+      if (newId !== selId) {
+        selId = newId;
+        if (selId) loadPreview(selId);
+      }
+    }
+    Array.prototype.forEach.call($("seg").children, function (b) {
+      b.setAttribute("aria-checked", String(b.getAttribute("data-mode")) === String(state.mode) ? "true" : "false");
+      b.disabled = !!state.running;
+    });
+    $("hint").textContent = state.mode === "auto" ? T.hint_auto : fmt(T.hint_manual, { n: state.mode });
+    $("skip").checked = !!state.skip_existing;
+    $("skip").disabled = !!state.running;
+    $("pickFiles").disabled = $("pickFolder").disabled = !!state.running;
+
+    Array.prototype.forEach.call($("repairModes").children, function (b) {
+      b.setAttribute("aria-checked", r.modes.indexOf(b.getAttribute("data-repair")) >= 0 ? "true" : "false");
+      b.disabled = !!state.running;
+    });
+    Array.prototype.forEach.call($("sensSeg").children, function (b) {
+      b.setAttribute("aria-checked", b.getAttribute("data-sens") === r.sensitivity ? "true" : "false");
+      b.disabled = !!state.running;
+    });
+    Array.prototype.forEach.call($("engineSeg").children, function (b) {
+      b.setAttribute("aria-checked", b.getAttribute("data-engine") === r.engine ? "true" : "false");
+      b.disabled = !!state.running;
+    });
+    var interp = r.modes.indexOf("interpolate") >= 0;
+    $("engineRow").style.display = interp ? "" : "none";
+    var g = r.gpu || {}, gi = $("gpuInfo");
+    if (!interp) { gi.textContent = ""; gi.className = "gpuinfo"; }
+    else if (!g.checked) { gi.textContent = T.gpu_checking; gi.className = "gpuinfo"; }
+    else if (g.ok && !g.software) { gi.textContent = fmt(T.gpu_ok, { d: g.device || "GPU" }); gi.className = "gpuinfo good"; }
+    else { gi.textContent = T.gpu_none; gi.className = "gpuinfo cpu"; }
+    $("suffix").checked = !!r.suffix; $("suffix").disabled = !!state.running;
+    $("autoan").checked = !!r.auto_analyse;
+    $("analyseNow").style.display = r.auto_analyse ? "none" : "";
+    $("names").textContent = namesPreview(r);
+
+    renderList();
+    ensureTimeline(selected());
+    renderTimeline();
+
+    var c = { ready: 0, probing: 0, outputs: 0, dups: 0, analysed: 0, again: 0 };
+    state.items.forEach(function (it) {
+      if (it.status === "ready") c.ready++;
+      if (it.status === "probing") c.probing++;
+      if (it.analysis === "done" && it.dups != null) { c.dups += it.dups; c.analysed++; }
+      (it.results || []).forEach(function (x) { if (x.status === "done" || x.status === "copied") c.outputs++; });
+      if (it.status === "ready" && (it.results || []).length) c.again++;
+    });
+    var bits = [];
+    if (state.items.length) bits.push(fmt(T.sum_clips, { n: state.items.length }));
+    if (c.analysed) bits.push(fmt(T.sum_dups, { d: c.dups }));
+    if (c.outputs) bits.push(fmt(T.sum_done, { d: c.outputs }));
+    $("summary").textContent = bits.join("  \u00b7  ");
+
+    var go = $("go");
+    if (state.running) { go.textContent = T.cancel; go.classList.add("cancel"); go.disabled = false; }
+    else {
+      go.textContent = c.again > 0 ? T.go_again : T.go;
+      go.classList.remove("cancel");
+      go.disabled = !(c.ready > 0 && c.probing === 0);
+    }
+    $("clear").disabled = !!state.running || state.items.length === 0;
+    $("open").disabled = !state.items.some(function (it) {
+      return (it.results || []).some(function (x) { return x.status === "done" || x.status === "copied" || x.status === "exists"; });
+    });
+    var er = $("error");
+    er.textContent = state.error || "";
+    er.className = state.error ? "show" : "";
+  }
+  window.render = render;
+
+  // events
+  function bindGroup(id, attr, fn) {
+    $(id).addEventListener("click", function (e) {
+      var b = e.target.closest("button"); if (!b || b.disabled) return;
+      fn(b.getAttribute(attr));
+    });
+  }
+  bindGroup("seg", "data-mode", function (m) { call("set_mode", m === "auto" ? "auto" : parseInt(m, 10)); });
+  bindGroup("repairModes", "data-repair", function (m) { call("toggle_repair", m); });
+  bindGroup("sensSeg", "data-sens", function (m) { call("set_sensitivity", m); });
+  bindGroup("engineSeg", "data-engine", function (m) { call("set_engine", m); });
+  $("pickFiles").addEventListener("click", function () { call("pick_files"); });
+  $("pickFolder").addEventListener("click", function () { call("pick_folder"); });
+  $("skip").addEventListener("change", function (e) { call("set_skip_existing", e.target.checked); });
+  $("suffix").addEventListener("change", function (e) { call("set_use_suffix", e.target.checked); });
+  $("autoan").addEventListener("change", function (e) { call("set_auto_analyse", e.target.checked); });
+  $("analyseNow").addEventListener("click", function () { call("analyse_now"); });
+  $("clear").addEventListener("click", function () { call("clear"); });
+  $("open").addEventListener("click", function () { call("open_output"); });
+  $("go").addEventListener("click", function () { call(state.running ? "cancel" : "start"); });
+
+  // drag and drop: the real paths are collected on the Python side
+  var drop = $("drop");
+  ["dragenter", "dragover"].forEach(function (n) {
+    document.addEventListener(n, function (e) { e.preventDefault(); drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (n) {
+    document.addEventListener(n, function (e) {
+      e.preventDefault();
+      if (n === "drop" || e.target === document.documentElement || !e.relatedTarget) drop.classList.remove("over");
+    });
+  });
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderTimeline, 120);
+  });
+
+  applyI18n();
+  render();
+  window.addEventListener("pywebviewready", function () {
+    var p = call("get_state");
+    if (p && p.then) p.then(render);
+  });
+  // --- Verification de mise a jour ---
+  async function checkUpdate(showSpinner) {
+    var btn = document.getElementById('btn-check-update');
+    if (showSpinner && btn) btn.disabled = true;
+    try {
+      var result = await pywebview.api.check_update();
+      if (result && result.update_available) {
+        document.getElementById('update-banner-text').textContent =
+          'Nouvelle version v' + result.latest + ' disponible';
+        document.getElementById('update-banner-link').href =
+          'https://github.com/le-wib/framesnap/releases/tag/v' + result.latest;
+        document.getElementById('update-banner').classList.add('visible');
+      }
+    } catch(e) {}
+    finally { if (btn) btn.disabled = false; }
+  }
+  document.getElementById('btn-check-update')
+    .addEventListener('click', function() { checkUpdate(true); });
+  window.addEventListener('pywebviewready', function() { checkUpdate(false); });
+
+  window.__framesnap = {
+    setLang: function (l) { lang = l; T = I18N[l]; applyI18n(); render(); },
+    describeAt: describeAt, select: select,
+    hover: function (frac) { if (lastShowTip) lastShowTip(frac); }      // for screenshots and tests
+  };
+})();
+
+</script>
+</body>
+</html>

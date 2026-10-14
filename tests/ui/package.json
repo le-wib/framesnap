@@ -1,0 +1,7 @@
+{
+  "name": "framesnap-ui-tests",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "test": "node --test ui.test.js" },
+  "devDependencies": { "jsdom": "^26.0.0" }
+}

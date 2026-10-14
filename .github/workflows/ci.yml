@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install imageio-ffmpeg numpy "opencv-python-headless>=4.8,<5" pytest
+      - name: Software Vulkan and RIFE (Linux only, lets the RIFE tests run without a GPU)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+          python packaging/fetch_rife.py ubuntu
+      - name: Python tests (engine, repair modes, controller, real ffmpeg)
+        run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: "22"
+      - name: UI tests (jsdom)
+        if: runner.os == 'Linux'
+        working-directory: tests/ui
+        run: |
+          npm install --no-audit --no-fund
+          npm test

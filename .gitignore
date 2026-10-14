@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec
+*.egg-info/
+.venv/
+node_modules/
+.DS_Store
+tests/ui/package-lock.json
+vendor/
