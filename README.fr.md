@@ -15,6 +15,16 @@ robustesse (voir [CHANGELOG.md](CHANGELOG.md)).
 
 ![Fenêtre principale de FrameSnap](docs/screenshots/main-fr.png)
 
+### Aperçu vidéo et corrections à la main
+
+![Aperçu vidéo, image par image, et liste des images copiées corrigée à la main](docs/screenshots/preview-fr.png)
+
+Le clip sélectionné se lit sous sa timeline, avec le son. Les flèches avancent ou reculent d'une
+image, le numéro de l'image et le temps s'affichent entre elles, et le curseur vert suit la
+lecture sur la timeline. Ici, l'aperçu est arrêté sur l'image 219, une image copiée, surlignée dans
+la liste. Trois fausses détections (images 47, 53 et 87) ont été retirées avec la croix, d'où le
+badge « modifié à la main » ; « Revenir à la détection » les remet.
+
 | Timeline des images copiées (survolez un pic) | Les sorties, décrites |
 | --- | --- |
 | ![Timeline](docs/screenshots/timeline-fr.png) | ![Sorties](docs/screenshots/outputs-fr.png) |
@@ -23,10 +33,12 @@ robustesse (voir [CHANGELOG.md](CHANGELOG.md)).
 | --- | --- |
 | ![Résultats](docs/screenshots/results-fr.png) | ![Thème clair](docs/screenshots/main-fr-light.png) |
 
-Les captures sont dessinées avec la vraie interface et la vraie analyse de trois clips IA (noms de
-fichiers changés). Leur ligne GPU indique « Pas de GPU utilisable » car elles ont été générées sur
-une machine sans GPU ; sur un Mac Apple Silicon ou un PC Windows avec carte graphique, elle affiche
-le périphérique trouvé. `docs/make_state.py` et `docs/shoot.js` les régénèrent.
+Les captures sont dessinées avec la vraie interface de la 2.3, la vraie analyse, le vrai
+traitement et le vrai serveur d'aperçu. Les trois clips de démonstration sont tirés d'une image
+du rush dialogue-dreamina (léger mouvement de caméra, quelques images copiées ajoutées). La ligne
+GPU indique « Pas de GPU utilisable » car les captures ont été générées sur une machine sans GPU ;
+sur un Mac Apple Silicon ou un PC Windows avec carte graphique, elle affiche le périphérique
+trouvé. `python docs/make_screenshots.py IMAGE` les régénère (demande Playwright).
 
 ## Pourquoi
 

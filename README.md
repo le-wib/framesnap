@@ -8,11 +8,21 @@ New in 2.3: video preview with frame by frame stepping and manual correction of 
 frames, exact colours in repaired outputs, and a long list of robustness fixes (see
 [CHANGELOG.md](CHANGELOG.md)).
 
-English | [Francais](README.fr.md)
+English | [Français](README.fr.md)
 
 ## Screenshots
 
 ![FrameSnap main window](docs/screenshots/main-en.png)
+
+### Video preview and manual corrections
+
+![Video preview, frame by frame, and the held frame list corrected by hand](docs/screenshots/preview-en.png)
+
+The selected clip plays under its timeline, with its sound. The arrows step one frame back or
+forward, the frame number and time show between them, and the green cursor follows playback on
+the timeline. Here the preview is stopped on frame 219, a held frame, highlighted in the list.
+Three false detections (frames 47, 53 and 87) were removed with the cross, hence the "edited by
+hand" badge; "Back to detection" brings them back.
 
 | Held frames timeline (hover a spike) | Outputs, described |
 | --- | --- |
@@ -22,10 +32,12 @@ English | [Francais](README.fr.md)
 | --- | --- |
 | ![Results](docs/screenshots/results-en.png) | ![Light theme](docs/screenshots/main-en-light.png) |
 
-The screenshots are drawn from the real interface with the real analysis of three AI clips
-(file names changed). Their GPU line says "No usable GPU" because they were generated on a
-machine without one; on a Mac with Apple Silicon or a Windows PC with a graphics card it shows
-the device found. `docs/make_state.py` and `docs/shoot.js` regenerate them.
+The screenshots are drawn from the real 2.3 interface, with the real analysis, processing and
+preview server. The three demo clips are made from one frame of the dialogue-dreamina rush
+(slight camera move, a few held frames added). Their GPU line says "No usable GPU" because they
+were generated on a machine without one; on a Mac with Apple Silicon or a Windows PC with a
+graphics card it shows the device found. `python docs/make_screenshots.py IMAGE` regenerates
+them (needs Playwright).
 
 ## Why
 
