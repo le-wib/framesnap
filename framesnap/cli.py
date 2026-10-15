@@ -24,7 +24,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--fps", default="auto", choices=["auto", "24", "25", "30", "60"],
                     help="target rate (default: auto, nearest standard rate)")
     ap.add_argument("--overwrite", action="store_true",
-                    help="redo files already present in the recoded folder")
+                    help="redo files already present in the recoded folder. Without it, a file "
+                         "made with the same settings is kept and one made with other settings "
+                         "is redone (files from versions before 2.3 are kept)")
     ap.add_argument("--preset", default="slow", help="x264 preset (default: slow)")
     ap.add_argument("--crf", type=int, default=12, help="x264 quality (default: 12)")
     ap.add_argument("--dry-run", action="store_true",

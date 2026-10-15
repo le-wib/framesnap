@@ -10,12 +10,19 @@ as stutter or stop motion. This module
 2. repairs them in one of two ways:
 
    * ``interpolate``: every held frame is replaced by a motion compensated
-     frame computed from its real neighbours (dense optical flow, DIS from
-     OpenCV). Frame count and duration are untouched, so the audio is untouched.
+     frame computed from its real neighbours (RIFE on the GPU, or dense optical
+     flow, DIS from OpenCV). Frame count and duration are untouched, so the
+     audio is untouched.
    * ``cut``: held frames are removed. The video gets shorter. The audio is
      either kept as is (``keep``: the picture ends first and a placeholder
      screen is shown until the sound ends) or time stretched with ``atempo``
      to the new length (``stretch``: pitch is preserved).
+
+Colour fidelity: frames travel between the two ffmpeg processes as 8 bit
+YUV 4:2:0, exactly as the encoder wants them, so the frames that are kept are
+never converted. Only the frames that are computed go through RGB (the RGB
+round trip of OpenCV is unbiased to about 0.1 level), and the colour tags of the
+source (range, matrix, primaries, transfer) are written to the output.
 
 Frames are streamed through ffmpeg pipes, so memory use stays small.
 """
@@ -32,7 +39,10 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from .core import Cancelled, Plan, Probe, subprocess_kwargs
+from .core import (
+    Cancelled, Plan, Probe, StderrTail, color_args, output_color, popen, release,
+    run_capture, setparams_filter,
+)
 
 DETECT_WIDTH = 192
 SENSITIVITY = {"strict": 0.15, "normal": 0.25, "loose": 0.40}
@@ -75,11 +85,12 @@ def frame_diffs(ffmpeg: str, src: Union[str, Path], vf: str, width: int, height:
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-i", str(src),
            "-map", "0:v:0", "-vf", chain, "-fps_mode", "passthrough",
            "-f", "rawvideo", "-"]
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, **subprocess_kwargs())
+    proc = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tail = StderrTail(proc.stderr)
     size = sw * sh
     diffs: List[float] = []
     prev = None
+    finished = False
     try:
         assert proc.stdout is not None
         while True:
@@ -94,10 +105,15 @@ def frame_diffs(ffmpeg: str, src: Union[str, Path], vf: str, width: int, height:
                 if on_progress is not None and len(diffs) % 24 == 0:
                     on_progress(len(diffs) + 1)
             prev = cur
+        finished = True
     finally:
-        if proc.poll() is None:
+        if proc.poll() is None and not finished:
             proc.kill()
-        proc.wait()
+        rc = proc.wait()
+        tail.join()
+        release(proc)
+    if rc != 0 and not diffs:
+        raise RepairError("decoding failed: %s" % tail.last("ffmpeg code %d" % rc))
     return np.asarray(diffs, dtype=np.float64)
 
 
@@ -106,21 +122,30 @@ def detect_duplicates(diffs: Sequence[float], sensitivity: str = "normal",
     """Indices of frames that repeat their predecessor.
 
     ``diffs[i]`` compares frame i+1 with frame i, so a small ``diffs[i]`` means
-    frame i+1 is a copy and the returned index is i+1.
+    frame i+1 is a copy and the returned index is i+1. A difference counts as small
+    relative to the median of its neighbours (``window`` on each side, itself
+    excluded). Vectorised: an hour at 60 fps takes a fraction of a second.
     """
     ratio = SENSITIVITY[sensitivity]
     d = np.asarray(diffs, dtype=np.float64)
     n = len(d)
-    flagged: List[int] = []
-    for i in range(n):
-        lo, hi = max(0, i - window), min(n, i + window + 1)
-        nb = np.concatenate([d[lo:i], d[i + 1:hi]])
-        if len(nb) == 0:
-            continue
-        local = float(np.median(nb))
-        if local > MIN_LOCAL_MOTION and d[i] < max(ABS_FLOOR, ratio * local):
-            flagged.append(i + 1)
-    return flagged
+    if n < 2:
+        return []
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    padded = np.concatenate([np.full(window, np.nan), d, np.full(window, np.nan)])
+    win = sliding_window_view(padded, 2 * window + 1).copy()
+    win[:, window] = np.nan                          # the difference itself is not a neighbour
+    valid = ~np.isnan(win)
+    counts = valid.sum(axis=1)
+    # median of the valid neighbours: sort with NaN last, average the middle pair
+    srt = np.sort(np.where(valid, win, np.inf), axis=1)
+    lo_i = np.clip((counts - 1) // 2, 0, None)
+    hi_i = np.clip(counts // 2, 0, None)
+    rows = np.arange(n)
+    local = (srt[rows, lo_i] + srt[rows, hi_i]) / 2.0
+    hit = (counts > 0) & (local > MIN_LOCAL_MOTION) & (d < np.maximum(ABS_FLOOR, ratio * local))
+    return [int(i) + 1 for i in np.nonzero(hit)[0]]
 
 
 def group_runs(flagged: Sequence[int]) -> List[Tuple[int, int]]:
@@ -259,17 +284,6 @@ class Interpolator:
         return out
 
 
-def _mean_gray_diff(a: np.ndarray, b: np.ndarray) -> float:
-    import cv2
-
-    h, w = a.shape[:2]
-    sw = 192
-    sh = max(2, int(h * sw / w))
-    ga = cv2.cvtColor(cv2.resize(a, (sw, sh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-    gb = cv2.cvtColor(cv2.resize(b, (sw, sh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-    return float(np.abs(ga.astype(np.float32) - gb.astype(np.float32)).mean())
-
-
 # --------------------------------------------------------------------------
 # audio helpers
 # --------------------------------------------------------------------------
@@ -286,19 +300,6 @@ def atempo_chain(factor: float) -> str:
         f /= 0.5
     parts.append("atempo=%.6f" % f)
     return ",".join(parts)
-
-
-def audio_duration(ffmpeg: str, src: Union[str, Path]) -> float:
-    """Duration in seconds of the first audio stream (0 if none)."""
-    r = subprocess.run(
-        [ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-i", str(src),
-         "-map", "0:a:0", "-c", "copy", "-f", "null", "-", "-progress", "pipe:1", "-nostats"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", **subprocess_kwargs())
-    if r.returncode != 0:
-        return 0.0
-    vals = re.findall(r"out_time_us=(\d+)", r.stdout)
-    return int(vals[-1]) / 1e6 if vals else 0.0
 
 
 # --------------------------------------------------------------------------
@@ -332,6 +333,54 @@ def placeholder_frame(width: int, height: int, text: str = PLACEHOLDER_TEXT) -> 
         cv2.putText(img, text, ((width - tw) // 2, (height + th) // 2), font, scale,
                     (255, 255, 255), thick, cv2.LINE_AA)
     return img
+
+
+def scene_change(a_y: np.ndarray, b_y: np.ndarray) -> float:
+    """Mean difference of two luma planes, on the 0..255 gray scale, at low resolution."""
+    import cv2
+
+    h, w = a_y.shape[:2]
+    sw = 192
+    sh = max(2, int(h * sw / max(1, w)))
+    ga = cv2.resize(a_y, (sw, sh), interpolation=cv2.INTER_AREA).astype(np.float32)
+    gb = cv2.resize(b_y, (sw, sh), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return float(np.abs(ga - gb).mean()) * 255.0 / 219.0     # limited range luma to gray levels
+
+
+def audio_duration(ffmpeg: str, src: Union[str, Path]) -> float:
+    """Duration in seconds of the first audio stream (0 if none)."""
+    r = run_capture(
+        [ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-i", str(src),
+         "-map", "0:a:0", "-c", "copy", "-f", "null", "-", "-progress", "pipe:1", "-nostats"])
+    if r.returncode != 0:
+        return 0.0
+    vals = re.findall(r"out_time_us=(\d+)", r.stdout)
+    return int(vals[-1]) / 1e6 if vals else 0.0
+
+
+# --------------------------------------------------------------------------
+# 8 bit YUV 4:2:0 frames (I420), as ffmpeg's rawvideo yuv420p
+# --------------------------------------------------------------------------
+
+def i420_size(width: int, height: int) -> int:
+    return width * height * 3 // 2
+
+
+def i420_to_bgr(buf: bytes, width: int, height: int) -> np.ndarray:
+    import cv2
+
+    yuv = np.frombuffer(buf, dtype=np.uint8).reshape(height * 3 // 2, width)
+    return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+
+
+def bgr_to_i420(img: np.ndarray) -> bytes:
+    import cv2
+
+    return cv2.cvtColor(img, cv2.COLOR_BGR2YUV_I420).tobytes()
+
+
+def luma(buf: bytes, width: int, height: int) -> np.ndarray:
+    return np.frombuffer(buf, dtype=np.uint8, count=width * height).reshape(height, width)
 
 
 # --------------------------------------------------------------------------
@@ -374,16 +423,22 @@ def analyse(ffmpeg: str, src: Union[str, Path], probe: Probe, plan: Plan,
 
 
 def _encoder_cmd(ffmpeg: str, src: Path, dst: Path, w: int, h: int, fps: int,
-                 audio_filter: str, has_audio: bool, preset: str, crf: int) -> List[str]:
+                 audio_filter: str, has_audio: bool, preset: str, crf: int,
+                 color: Optional[dict] = None) -> List[str]:
+    color = color or {}
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-y",
-           "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "%dx%d" % (w, h), "-r", str(fps),
+           "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "%dx%d" % (w, h), "-r", str(fps),
            "-i", "-", "-i", str(src), "-map", "0:v:0"]
     if has_audio:
         cmd += ["-map", "1:a?"]
+    tags = setparams_filter(color)
+    if tags:
+        cmd += ["-vf", tags]          # tag the raw frames so that nothing converts them
     cmd += ["-r", str(fps), "-fps_mode", "cfr",
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
-            "-x264-params", "keyint=%d:min-keyint=%d" % (fps, fps),
-            "-video_track_timescale", str(fps * 1000), "-map_metadata", "1",
+            "-x264-params", "keyint=%d:min-keyint=%d" % (fps, fps)]
+    cmd += color_args(color)
+    cmd += ["-video_track_timescale", str(fps * 1000), "-map_metadata", "1",
             "-c:a", "aac", "-b:a", "256k", "-ar", "48000"]
     if audio_filter:
         cmd += ["-af", audio_filter]
@@ -404,16 +459,16 @@ def repair(ffmpeg: str, src: Union[str, Path], dst: Union[str, Path], probe: Pro
     w, h = probe.width, probe.height
     if w <= 0 or h <= 0:
         raise RepairError("unknown frame size")
-
+    if w % 2 or h % 2:
+        raise RepairError("frame size %dx%d is odd: H.264 in 4:2:0 needs even sizes" % (w, h))
     frames_in = probe.frames if plan.action in ("retime", "copy") else int(round(probe.duration * fps))
     if flagged is None:
         flagged, diffs = analyse(ffmpeg, src, probe, plan, options.sensitivity, cancel)
         frames_in = len(diffs) + 1
-    flagged = sorted(set(flagged))
+    flagged = sorted(set(int(f) for f in flagged))
     flagged_set = set(flagged)
     report = RepairReport(frames_in=frames_in, flagged=list(flagged))
     report.seconds_in = frames_in / float(fps)
-
     n_out = frames_in - (len(flagged) if options.mode == "cut" else 0)
     report.frames_out = n_out
     report.seconds_out = n_out / float(fps)
@@ -434,43 +489,41 @@ def repair(ffmpeg: str, src: Union[str, Path], dst: Union[str, Path], probe: Pro
     report.placeholder_frames = pad_frames
     audio_filter = atempo_chain(audio_tempo) if abs(audio_tempo - 1.0) > 2e-4 else ""
 
-    # decoder: same frames as the detection pass, full resolution
+    # decoder: same frames as the detection pass, full resolution, 8 bit YUV 4:2:0
     vf = decode_filter(plan)
     dec = [ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-i", str(src), "-map", "0:v:0"]
     if vf:
         dec += ["-vf", vf]
-    dec += ["-fps_mode", "passthrough", "-pix_fmt", "bgr24", "-f", "rawvideo", "-"]
-    decoder = subprocess.Popen(dec, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, **subprocess_kwargs())
-    enc_cmd = _encoder_cmd(ffmpeg, src, dst, w, h, fps, audio_filter, probe.has_audio, preset, crf)
-    encoder = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.PIPE, **subprocess_kwargs())
-    enc_err: List[str] = []
-    t = threading.Thread(target=lambda: enc_err.extend(
-        encoder.stderr.read().decode("utf-8", "replace").splitlines()), daemon=True)  # type: ignore[union-attr]
-    t.start()
-
+    dec += ["-fps_mode", "passthrough", "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"]
+    enc_cmd = _encoder_cmd(ffmpeg, src, dst, w, h, fps, audio_filter, probe.has_audio, preset, crf,
+                           output_color(probe))
+    decoder = popen(dec, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    dec_err = StderrTail(decoder.stderr)
+    encoder = popen(enc_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    enc_err = StderrTail(encoder.stderr)
     interp = Interpolator(options.engine)
-    frame_bytes = w * h * 3
+    frame_bytes = i420_size(w, h)
 
-    def put(frame: np.ndarray) -> None:
+    def put(frame: bytes) -> None:
         try:
-            encoder.stdin.write(frame.tobytes())  # type: ignore[union-attr]
+            encoder.stdin.write(frame)  # type: ignore[union-attr]
         except (BrokenPipeError, OSError):
-            raise RepairError(enc_err[-1] if enc_err else "encoder stopped")
+            enc_err.join(1)
+            raise RepairError(enc_err.last("encoder stopped"))
 
-    def fix_run(prev: np.ndarray, nxt: np.ndarray, count: int) -> List[np.ndarray]:
-        if _mean_gray_diff(prev, nxt) > SCENE_CUT_LEVEL:
+    def fix_run(prev: bytes, nxt: bytes, count: int) -> List[bytes]:
+        if scene_change(luma(prev, w, h), luma(nxt, w, h)) > SCENE_CUT_LEVEL:
             report.skipped_cuts += count
             return [prev] * count
         ts = [(j + 1) / float(count + 1) for j in range(count)]
         report.repaired += count
-        return interp.between(prev, nxt, ts)
+        made = interp.between(i420_to_bgr(prev, w, h), i420_to_bgr(nxt, w, h), ts)
+        return [bgr_to_i420(f) for f in made]
 
     ok = False
     try:
         assert decoder.stdout is not None
-        prev: Optional[np.ndarray] = None
+        prev: Optional[bytes] = None
         pending = 0
         i = 0
         while True:
@@ -479,33 +532,35 @@ def repair(ffmpeg: str, src: Union[str, Path], dst: Union[str, Path], probe: Pro
             buf = decoder.stdout.read(frame_bytes)
             if len(buf) < frame_bytes:
                 break
-            frame = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3)
             if i in flagged_set:
                 if options.mode == "interpolate" and prev is not None:
                     pending += 1
                 # cut mode: drop the frame
             else:
                 if pending and prev is not None:
-                    for f in fix_run(prev, frame, pending):
+                    for f in fix_run(prev, buf, pending):
                         put(f)
                     pending = 0
-                put(frame)
-                prev = frame.copy()
+                put(buf)
+                prev = buf
             i += 1
             if on_progress and frames_in:
                 on_progress(min(99.0, 100.0 * i / frames_in))
+        if decoder.wait() != 0:
+            dec_err.join(1)
+            raise RepairError("decoding failed: %s" % dec_err.last("ffmpeg code %d" % decoder.returncode))
         if pending and prev is not None:  # held frames at the very end: nothing after to interpolate to
             for _ in range(pending):
                 put(prev)
         if pad_frames:
-            pad = placeholder_frame(w, h, options.message)
+            pad = bgr_to_i420(placeholder_frame(w, h, options.message))
             for _ in range(pad_frames):
                 put(pad)
         encoder.stdin.close()  # type: ignore[union-attr]
         rc = encoder.wait()
-        t.join(timeout=5)
+        enc_err.join(5)
         if rc != 0:
-            raise RepairError(enc_err[-1] if enc_err else "ffmpeg failed (code %d)" % rc)
+            raise RepairError(enc_err.last("ffmpeg failed (code %d)" % rc))
         ok = True
         report.backend = " + ".join(interp.backends_used)
         report.fallback_reason = interp.fallback_reason
@@ -514,6 +569,7 @@ def repair(ffmpeg: str, src: Union[str, Path], dst: Union[str, Path], probe: Pro
             if p.poll() is None:
                 p.kill()
             p.wait()
+            release(p)
         if not ok:
             try:
                 dst.unlink()

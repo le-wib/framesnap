@@ -1,16 +1,16 @@
 """Controller tests: the whole app logic without any window."""
 
 import json
+import subprocess
 import time
 
-import pytest
 
 from framesnap import core, dedupe
 from framesnap.app import Api, Controller
 from framesnap.core import Recoder, probe_file
 
-from .test_core import FFMPEG, clips  # noqa: F401  (fixture reuse)
-from .test_dedupe import HELD, N, held_clip  # noqa: F401
+from .test_core import FFMPEG
+from .test_dedupe import HELD, N
 
 
 def make(tmp_path, **kw):
@@ -402,3 +402,117 @@ def test_settings_are_locked_while_running(tmp_path, clips):
     assert ctl.state()["repair"]["modes"] == ["off"] and not ctl.state()["repair"]["suffix"]
     assert ctl.state()["mode"] == "auto"
     ctl.running = False
+
+
+# ------------------------------------------------------- manual edits (2.3)
+def _analysed(tmp_path, held_clip):
+    ctl, _ = make(tmp_path)
+    ctl.add_paths([held_in(tmp_path, held_clip)])
+    wait_probed(ctl)
+    wait_analysed(ctl)
+    return ctl, ctl.state()["items"][0]["id"]
+
+
+def test_manual_edits_survive_a_new_analysis_pass(tmp_path, held_clip):
+    ctl, iid = _analysed(tmp_path, held_clip)
+    tl = ctl.set_flags(iid, [5, 11])
+    assert [r[0] for r in tl["runs"]] == [5, 11] and tl["manual"] and tl["v"] == ctl.state()["items"][0]["tl_v"]
+    ctl.set_auto_analyse(False)
+    ctl.set_auto_analyse(True)                             # 2.2.x put the detection back here
+    time.sleep(0.5)
+    ctl.analyse_now()
+    time.sleep(0.5)
+    ctl.set_sensitivity("loose")
+    item = ctl.state()["items"][0]
+    assert item["dups"] == 2 and item["manual"] and ctl._flags[iid]["flagged"] == [5, 11]
+
+
+def test_reset_flags_goes_back_to_the_detection(tmp_path, held_clip):
+    ctl, iid = _analysed(tmp_path, held_clip)
+    ctl.set_flags(iid, [3])
+    tl = ctl.reset_flags(iid)
+    assert [r[0] for r in tl["runs"]] == HELD and not tl["manual"]
+    assert not ctl.state()["items"][0]["manual"]
+
+
+def test_set_flags_validates_its_input(tmp_path, held_clip):
+    ctl, iid = _analysed(tmp_path, held_clip)
+    assert ctl.set_flags(iid, ["x"]) is None and ctl.set_flags(iid, [None]) is None
+    tl = ctl.set_flags(iid, [0, 5, 5, N, 10 ** 9, -1])     # frame 0 has no predecessor
+    assert [r[0] for r in tl["runs"]] == [5]
+    assert ctl.set_flags(999, [5]) is None
+    from framesnap.app import Api
+
+    assert Api.set_flags(type("A", (), {"_c": ctl})(), iid, "5,6") is None
+
+
+def test_manual_edits_are_used_by_the_run(tmp_path, held_clip):
+    ctl, iid = _analysed(tmp_path, held_clip)
+    ctl.set_engine("cpu")
+    ctl.set_repair("cut_stretch")
+    ctl.set_flags(iid, HELD[:3])
+    assert ctl.start(wait=True)
+    assert probe_file(FFMPEG, tmp_path / "recoded" / "held.mp4").frames == N - 3
+
+
+def test_changing_the_rate_drops_manual_edits(tmp_path, held_clip):
+    ctl, iid = _analysed(tmp_path, held_clip)
+    ctl.set_flags(iid, [5])
+    ctl.set_mode(30)
+    assert not ctl.state()["items"][0]["manual"] and iid not in ctl._flags
+
+
+def test_api_has_no_unsafe_frame_helpers():
+    from framesnap.app import Api
+
+    assert not hasattr(Api, "add_frame") and not hasattr(Api, "remove_frame")
+    assert callable(Api.reset_flags) and callable(Api.open_url)
+
+
+# ------------------------------------------------------- stopping (2.3)
+def test_removing_a_clip_stops_its_analysis(tmp_path, held_clip, monkeypatch):
+    started, stopped = [], []
+
+    def slow_diffs(ffmpeg, src, vf, w, h, cancel=None, on_progress=None):
+        started.append(src)
+        end = time.time() + 20
+        while time.time() < end:
+            if cancel is not None and cancel.is_set():
+                stopped.append(src)
+                raise core.Cancelled()
+            time.sleep(0.02)
+        raise AssertionError("the analysis was never stopped")
+
+    monkeypatch.setattr(dedupe, "frame_diffs", slow_diffs)
+    ctl, _ = make(tmp_path)
+    ctl.add_paths([held_in(tmp_path, held_clip)])
+    wait_for(lambda: started)
+    ctl.remove(ctl.state()["items"][0]["id"])
+    wait_for(lambda: stopped, 5)
+
+
+def test_adding_then_clearing_at_once_leaves_a_clean_state(tmp_path, clips):
+    ctl, _ = make(tmp_path)
+    ctl.add_paths(copy_in(tmp_path, clips, "ntsc24", "ntsc30", "fps25"))
+    ctl.clear()
+    time.sleep(1.5)
+    assert ctl.state()["items"] == [] and ctl._probes == {} and ctl._analysis == {}
+
+
+def test_shutdown_stops_the_encoder_and_leaves_no_partial_file(tmp_path):
+    clip = tmp_path / "big.mp4"
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=1280x720:rate=30000/1001", "-t", "6", "-c:v", "libx264",
+                    "-preset", "ultrafast", str(clip)], check=True)
+    ctl = Controller(lambda s: None, check_gpu=False,
+                     recoder_factory=lambda **k: Recoder(FFMPEG, **k), preset="veryslow", crf=12)
+    ctl.add_paths([str(clip)])
+    wait_probed(ctl)
+    assert ctl.start()
+    wait_for(lambda: core.live_processes(), 20)            # the encoder is running
+    t0 = time.time()
+    ctl.shutdown()
+    assert time.time() - t0 < 10
+    assert core.live_processes() == [] and not ctl._worker.is_alive()
+    assert not list(tmp_path.rglob("*.part.*")) and not (tmp_path / "recoded" / "big.mp4").exists()
+    assert ctl.add_paths([str(clip)]) == 0 and not ctl.start()

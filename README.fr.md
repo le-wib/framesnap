@@ -5,6 +5,9 @@ Déposez un clip ou un dossier, choisissez la cadence cible (ou laissez FrameSna
 détecter) et récupérez de nouveaux fichiers avec les **mêmes noms** dans un dossier
 `recoded`. Nouveau en 2.0 : détection et réparation des **images dupliquées** (saccades),
 avec accélération GPU sur Apple Silicon et sur les cartes graphiques Windows.
+Nouveau en 2.3 : aperçu vidéo avec navigation image par image et correction à la main des
+images copiées, couleurs exactes dans les sorties réparées, et de nombreux correctifs de
+robustesse (voir [CHANGELOG.md](CHANGELOG.md)).
 
 [English](README.md) | Français
 
@@ -116,8 +119,12 @@ avec le bouton Analyser.
   `recoded/cadence/`, `recoded/inter/`, `recoded/keep/`, `recoded/speed/`.
 * **Recoder à nouveau.** Rien n'est à réimporter : changez la cadence, les sorties, la détection ou
   le suffixe, puis cliquez sur *Recoder à nouveau*. Les résultats sont listés sous chaque clip. Les
-  fichiers écrits pendant la session sont refaits ; ceux d'une session précédente sont ignorés tant
-  que « Ignorer les clips déjà recodés » est coché.
+  fichiers écrits pendant la session sont refaits. Un fichier d'une session précédente est ignoré
+  tant que « Ignorer les clips déjà recodés » est coché, mais seulement s'il a été fait avec les
+  mêmes réglages (cadence, sortie, détection ou images corrigées à la main, qualité) : sinon il
+  est refait. FrameSnap note les réglages de chaque sortie dans un petit fichier caché,
+  `recoded/.framesnap-manifest.json`. Les fichiers faits par les versions antérieures à la 2.3
+  n'y figurent pas et sont conservés.
 
 ## Images dupliquées (saccades)
 
@@ -153,6 +160,21 @@ cachées puis reconstruites à partir d'un vrai rush (PSNR) : répéter l'image 
 26,6 dB, optical flow CPU 34,7 dB, RIFE 35,4 dB, RIFE étant devant de 2 à 4 dB sur les
 mouvements rapides.
 
+**Couleurs.** Les images conservées passent du décodeur à l'encodeur sans aucune conversion
+(YUV 4:2:0 8 bits), seules les images calculées passent en RGB, et les étiquettes de couleur de
+la source (plage, matrice, primaires, transfert) sont recopiées dans la sortie. Les versions 2.0
+à 2.2 convertissaient chaque image en RGB et retour, ce qui assombrissait les sorties réparées
+de 2 à 3 niveaux avec une légère dominante : refaites ces sorties avec la 2.3. Les clips de
+téléphone filmés en vertical (métadonnée de rotation) sont aussi gérés.
+
+**Aperçu et corrections à la main.** Sous la timeline, le clip sélectionné se lit avec le son.
+Les boutons de part et d'autre du numéro d'image avancent ou reculent d'une image ; un clic sur
+la timeline va à l'image visée. La liste des images copiées se corrige : retirez une fausse
+détection avec la croix, ajoutez une image par son numéro ou avec « Ajouter l'image courante ».
+Les corrections sont conservées quand le niveau de détection change ou que le clip est analysé
+de nouveau ; « Revenir à la détection » les efface. Changer la cadence cible les efface aussi,
+puisque les numéros d'image changent.
+
 **Limites.** L'interpolation peut laisser des artefacts sur un mouvement très rapide ou quand
 un objet apparaît de derrière un autre. Une image copiée à côté d'une coupe de plan est
 laissée telle quelle, et les images copiées tout à la fin d'un clip ne peuvent pas être
@@ -179,9 +201,9 @@ chaque clip, avec son nombre d'images copiées quand `--repair` est indiqué.
 
 ```
 pip install -r requirements.txt
-python packaging/fetch_rife.py   # facultatif : télécharge RIFE pour l'interpolation GPU (environ 20 Mo)
+python packaging/fetch_rife.py   # facultatif : RIFE pour l'interpolation GPU (télécharge environ 430 Mo une fois, en garde environ 40 Mo)
 python -m framesnap            # ouvre l'app (sous Windows : py -m framesnap)
-python -m pytest               # tests du moteur et du contrôleur (vrai ffmpeg)
+python -m pytest               # tests du moteur, des couleurs, du serveur d'aperçu et du contrôleur (vrai ffmpeg)
 cd tests/ui && npm install && npm test   # tests de l'interface (jsdom)
 ```
 
@@ -192,16 +214,29 @@ Python 3.9 ou plus. ffmpeg vient du paquet `imageio-ffmpeg` ; définissez
 
 Les releases sont construites par GitHub Actions : macOS (Apple Silicon et Intel) et Windows (64 bits).
 
-* Poussez un tag : `git tag v1.1.0 && git push origin v1.1.0`. Le workflow
+* Poussez un tag : `git tag v2.3.0 && git push origin v2.3.0`. Le workflow
   *Release builds* lance les tests, construit chaque app, exécute un auto-test de l'app
-  packagée (elle encode un clip synthétique avec le ffmpeg intégré) et attache les fichiers à
-  la Release GitHub : deux `.dmg`, un installateur Windows et un zip Windows.
+  packagée (elle encode et répare un clip synthétique avec le ffmpeg intégré et vérifie le
+  serveur d'aperçu) et attache les fichiers à la Release GitHub : deux `.dmg`, un installateur
+  Windows et un zip Windows. La Release n'est publiée que si toutes les plateformes ont réussi.
 * Ou lancez-le à la main depuis l'onglet Actions (*Run workflow*) : les fichiers sont
   disponibles comme artefacts de l'exécution.
 * En local sur un Mac : `pip install -r requirements-dev.txt && bash packaging/build_macos.sh`.
 * En local sur Windows : `pip install -r requirements-dev.txt` puis
   `powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1`
   (l'étape installateur demande [Inno Setup 6](https://jrsoftware.org/isinfo.php)).
+
+## Confidentialité
+
+FrameSnap fonctionne hors ligne. Sa seule requête vers internet est une vérification de la
+dernière version sur GitHub (`api.github.com/repos/le-wib/framesnap/releases/latest`) à
+l'ouverture de la fenêtre, puis à chaque clic sur le bouton de rafraîchissement à côté du nom.
+Rien sur vos clips n'est envoyé. Pour la désactiver, définissez la variable d'environnement
+`FRAMESNAP_NO_UPDATE_CHECK=1`.
+
+L'aperçu est diffusé par un petit serveur interne à l'app, qui n'écoute que sur `127.0.0.1`,
+sur un port aléatoire, derrière une adresse secrète aléatoire qui change à chaque clip et
+cesse de fonctionner quand le clip est retiré, la liste vidée ou l'app fermée.
 
 ## Licence
 

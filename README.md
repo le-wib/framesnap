@@ -4,6 +4,9 @@ Snap video clips to a clean, constant **24, 25, 30 or 60 fps**. Drop a clip or a
 folder, pick a target rate (or let FrameSnap detect it), and get new files with
 the **same names** in a `recoded` folder. New in 2.0: detect and repair **duplicated
 frames** (stutter), with GPU acceleration on Apple Silicon and on Windows graphics cards.
+New in 2.3: video preview with frame by frame stepping and manual correction of the held
+frames, exact colours in repaired outputs, and a long list of robustness fixes (see
+[CHANGELOG.md](CHANGELOG.md)).
 
 English | [Francais](README.fr.md)
 
@@ -111,8 +114,12 @@ hand with the Analyse button.
   `recoded/cadence/`, `recoded/inter/`, `recoded/keep/`, `recoded/speed/`.
 * **Recode again.** Nothing has to be imported twice: change the rate, the outputs, the
   detection or the suffix, then press *Recode again*. Results are listed under each clip.
-  Files written during the session are redone; files that were already there from an earlier
-  session are skipped while "Skip clips already recoded" is ticked.
+  Files written during the session are redone. A file that was already there from an earlier
+  session is skipped while "Skip clips already recoded" is ticked, but only if it was made with
+  the same settings (rate, output, detection or hand edited held frames, quality): otherwise it
+  is redone. FrameSnap remembers the settings of each output in a small hidden file,
+  `recoded/.framesnap-manifest.json`. Files made by versions before 2.3 have no such record and
+  are kept.
 
 ## Duplicated frames (stutter)
 
@@ -146,6 +153,20 @@ The window says which engine was found, each clip says which one was used, and
 from a real rush (PSNR): repeating the previous frame 26.6 dB, CPU optical flow 34.7 dB,
 RIFE 35.4 dB, RIFE being ahead by 2 to 4 dB on fast motion.
 
+**Colours.** The frames that are kept go from the decoder to the encoder untouched (8 bit YUV
+4:2:0), only the computed frames go through RGB, and the colour tags of the source (range,
+matrix, primaries, transfer) are written to the output. Versions 2.0 to 2.2 converted every
+frame to RGB and back, which made the repaired outputs about 2 to 3 levels darker and slightly
+tinted: redo those outputs with 2.3. Phone clips recorded in portrait (rotation metadata) are
+handled too.
+
+**Preview and manual corrections.** Under the timeline, the selected clip plays with its sound.
+The buttons next to the frame number step one frame at a time; clicking the timeline jumps to
+that frame. The list of held frames can be edited: remove a false detection with the cross, add
+a frame by its number or with "Add current frame". Hand edits are kept when the detection level
+changes or the clip is analysed again; "Back to detection" drops them. Changing the target rate
+drops them as well, since the frame numbers change.
+
 **Limits.** Interpolation can leave artefacts on very fast motion or when an object appears
 from behind another. A held frame next to a scene cut is left alone, and held frames at the
 very end of a clip cannot be interpolated. Deliberate freeze frames count as held frames, so
@@ -171,9 +192,9 @@ clip, including its number of held frames when `--repair` is set.
 
 ```
 pip install -r requirements.txt
-python packaging/fetch_rife.py   # optional: downloads RIFE for GPU interpolation (about 20 MB)
+python packaging/fetch_rife.py   # optional: RIFE for GPU interpolation (downloads about 430 MB once, keeps about 40 MB)
 python -m framesnap            # opens the app (on Windows: py -m framesnap)
-python -m pytest               # engine and controller tests (real ffmpeg)
+python -m pytest               # engine, colour, preview server and controller tests (real ffmpeg)
 cd tests/ui && npm install && npm test   # interface tests (jsdom)
 ```
 
@@ -184,16 +205,28 @@ Python 3.9 or newer. ffmpeg is taken from the `imageio-ffmpeg` package; set
 
 Releases are built by GitHub Actions: macOS (Apple Silicon and Intel) and Windows (64 bit).
 
-* Push a tag: `git tag v1.1.0 && git push origin v1.1.0`. The workflow
+* Push a tag: `git tag v2.3.0 && git push origin v2.3.0`. The workflow
   *Release builds* runs the tests, builds each app, runs a self test of the packaged app
-  (it encodes a synthetic clip with the bundled ffmpeg), and attaches the files to the
-  GitHub Release: two `.dmg`, one Windows installer and one Windows zip.
+  (it encodes and repairs a synthetic clip with the bundled ffmpeg and checks the preview
+  server), and attaches the files to the GitHub Release: two `.dmg`, one Windows installer and
+  one Windows zip. The Release is only published when every platform succeeded.
 * Or run it by hand from the Actions tab (*Run workflow*): the files are attached to the
   run as artifacts.
 * Locally on a Mac: `pip install -r requirements-dev.txt && bash packaging/build_macos.sh`.
 * Locally on Windows: `pip install -r requirements-dev.txt` then
   `powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1`
   (the installer step needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)).
+
+## Privacy
+
+FrameSnap works offline. Its only internet request is one check of the latest version on
+GitHub (`api.github.com/repos/le-wib/framesnap/releases/latest`) when the window opens, and
+again when you press the refresh button next to the name. Nothing about your clips is sent.
+To switch it off, set the environment variable `FRAMESNAP_NO_UPDATE_CHECK=1`.
+
+The preview is streamed by a small server inside the app that listens on `127.0.0.1` only,
+on a random port, behind a random secret address that changes for every clip and stops working
+when the clip is removed, the list is cleared or the app is closed.
 
 ## License
 

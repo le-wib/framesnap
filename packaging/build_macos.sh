@@ -64,6 +64,7 @@ done
 [ "$ok" = 1 ] || { echo "ERROR: packaged app failed its selftest"; exit 1; }
 
 STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 DMG="dist/FrameSnap-${VERSION}-${LABEL}.dmg"

@@ -2,12 +2,18 @@
 
 The Controller holds all the state and logic and knows nothing about the GUI,
 so it is fully testable. The Api class is the thin object exposed to the page.
+
+Threads: probing, analysis and encoding run in daemon threads. ``Controller.shutdown``
+(called when the window closes) cancels them, kills their ffmpeg processes and waits
+for them, so that nothing keeps running and no ``.part`` file is left behind.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,32 +21,88 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from . import __version__
+from . import preview
 from .core import (
-    OUT_DIRNAME, STANDARD_RATES, VARIANT_ORDER, VARIANTS, VIDEO_EXTS, Job, JobResult, Plan, Probe,
-    Recoder, bundle_roots, collect_jobs, find_ffmpeg, make_plan, probe_file,
-    subprocess_kwargs,
+    STANDARD_RATES, VARIANT_ORDER, VARIANTS, VIDEO_EXTS, Cancelled, Job, JobResult, Plan, Probe,
+    Recoder, bundle_roots, collect_jobs, expected_frames, find_ffmpeg, kill_all, make_plan,
+    probe_file, run_capture,
 )
 
 Mode = Union[str, int]
 PUSH_INTERVAL = 0.2
 
-GITHUB_REPO = "le-wib/framesnap"  # à adapter si nécessaire
+GITHUB_REPO = "le-wib/framesnap"
+RELEASES_URL = "https://github.com/%s/releases" % GITHUB_REPO
+NO_UPDATE_CHECK_ENV = "FRAMESNAP_NO_UPDATE_CHECK"
 
 
-def _fetch_latest_version() -> Optional[str]:
-    """Query the GitHub Releases API and return the latest tag name, or None on error."""
+# --------------------------------------------------------------------------
+# update check
+# --------------------------------------------------------------------------
+
+def parse_version(text: Optional[str]) -> Optional[Tuple[int, ...]]:
+    """"v2.3.0" -> (2, 3, 0). None when the text is not a version."""
+    if not text:
+        return None
+    m = re.match(r"^\s*v?(\d+(?:\.\d+)*)", str(text))
+    if not m:
+        return None
+    parts = tuple(int(x) for x in m.group(1).split("."))
+    return parts + (0,) * (3 - len(parts)) if len(parts) < 3 else parts
+
+
+def is_newer(latest: Optional[str], current: str) -> bool:
+    a, b = parse_version(latest), parse_version(current)
+    return bool(a and b and a > b)
+
+
+def _fetch_latest_release(timeout: float = 5.0) -> Optional[dict]:
+    """{"tag", "url"} of the latest GitHub release, or None (offline, error, disabled).
+
+    This is the only request FrameSnap sends over the internet. Set the environment
+    variable FRAMESNAP_NO_UPDATE_CHECK=1 to switch it off.
+    """
+    if os.environ.get(NO_UPDATE_CHECK_ENV):
+        return None
     try:
         url = "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPO
-        req = urllib.request.Request(url, headers={"User-Agent": "FrameSnap/%s" % __version__})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("tag_name")
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "FrameSnap/%s" % __version__, "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
     except Exception:  # noqa: BLE001
         return None
+    tag = data.get("tag_name") if isinstance(data, dict) else None
+    if not parse_version(tag):
+        return None
+    page = data.get("html_url") or ""
+    if not (isinstance(page, str) and page.startswith(RELEASES_URL + "/")):
+        page = "%s/tag/%s" % (RELEASES_URL, tag)
+    return {"tag": tag, "url": page}
 
+
+def check_for_update(current: str = __version__) -> dict:
+    """What the page needs to show the update banner."""
+    rel = _fetch_latest_release()
+    if rel is None:
+        return {"current": current, "latest": None, "update_available": False,
+                "url": RELEASES_URL, "error": True}
+    latest = ".".join(str(x) for x in parse_version(rel["tag"]) or ())
+    return {"current": current, "latest": latest, "update_available": is_newer(rel["tag"], current),
+            "url": rel["url"], "error": False}
+
+
+def safe_release_url(url: str) -> bool:
+    """Only the project's release pages may be opened from the page."""
+    return isinstance(url, str) and (url == RELEASES_URL or url.startswith(RELEASES_URL + "/"))
+
+
+# --------------------------------------------------------------------------
+# controller
+# --------------------------------------------------------------------------
 
 class Controller:
     """All the app state. ``push(state_dict)`` is called after every change."""
@@ -58,17 +120,21 @@ class Controller:
         self._crf = crf
         self._lock = threading.RLock()
         self._an_lock = threading.Lock()          # one analysis at a time
+        self._an_cancel = threading.Event()       # stops the analysis in progress
+        self._an_current: Optional[int] = None
         self._items: List[dict] = []
         self._jobs: Dict[int, Job] = {}
         self._probes: Dict[int, Probe] = {}
         self._analysis: Dict[int, dict] = {}      # iid -> {"key", "diffs", "fps"}
-        self._flags: Dict[int, dict] = {}         # iid -> {"sens", "key", "flagged"}
+        self._flags: Dict[int, dict] = {}         # iid -> {"sens", "key", "flagged", "manual"}
         self._processed: set = set()              # "<iid>|<variant>" written in this session
         self._next_id = 1
         self.mode: Mode = "auto"
         self.skip_existing = True
         self.running = False
+        self.closing = False
         self._recoder: Optional[Recoder] = None
+        self._worker: Optional[threading.Thread] = None
         self._last_push = 0.0
         self._error: str = ""
         self.repair_modes: List[str] = ["off"]
@@ -103,6 +169,7 @@ class Controller:
             }
 
     def _push(self, force: bool = True) -> None:
+        """Send the state to the GUI. Never call it while holding ``self._lock``."""
         now = time.time()
         if not force and now - self._last_push < PUSH_INTERVAL:
             return
@@ -120,7 +187,7 @@ class Controller:
     # ------------------------------------------------------------ queue
     def add_paths(self, paths: List[str]) -> int:
         """Add files and folders. Probing and analysis happen in the background."""
-        if self.running:
+        if self.running or self.closing:
             return 0
         try:
             self._rec()
@@ -132,11 +199,14 @@ class Controller:
         jobs = collect_jobs(paths)
         with self._lock:
             known = {str(j.src) for j in self._jobs.values()}
-            new = [j for j in jobs if str(j.src) not in known]
-            for job in new:
+            new: List[Tuple[int, Job]] = []
+            for job in jobs:
+                if str(job.src) in known:
+                    continue
                 iid = self._next_id
                 self._next_id += 1
                 self._jobs[iid] = job
+                new.append((iid, job))
                 self._items.append({
                     "id": iid, "name": job.rel, "status": "probing",
                     "fps": None, "target": None, "action": "", "pct": 0.0,
@@ -144,7 +214,7 @@ class Controller:
                     "analysis": "pending" if self.auto_analyse else "off",
                     "analysis_pct": 0.0, "dups": None, "dup_pct": 0.0,
                     "runs": {"double": 0, "triple": 0, "more": 0}, "tl_v": 0,
-                    "results": [],
+                    "manual": False, "results": [],
                 })
         self._push()
         if new:
@@ -157,13 +227,14 @@ class Controller:
                 return it
         return None
 
-    def _probe_many(self, jobs: List[Job]) -> None:
+    def _probe_many(self, new: List[Tuple[int, Job]]) -> None:
         rec = self._rec()
-        ids = {id(j): iid for iid, j in self._jobs.items()}
-        for job in jobs:
-            iid = ids.get(id(job))
-            if iid is None:
-                continue
+        for iid, job in new:
+            if self.closing:
+                return
+            with self._lock:
+                if iid not in self._jobs:          # removed while waiting
+                    continue
             try:
                 probe = rec.probe(job.src)
             except Exception as exc:  # noqa: BLE001
@@ -174,17 +245,19 @@ class Controller:
                 self._push(force=False)
                 continue
             with self._lock:
-                self._probes[iid] = probe
                 it = self._item(iid)
-                if it:
-                    it.update(fps=probe.fps, w=probe.width, h=probe.height)
-                    self._apply_plan(it, probe)
+                if it is None or iid not in self._jobs:
+                    continue
+                self._probes[iid] = probe
+                it.update(fps=probe.fps, w=probe.width, h=probe.height)
+                self._apply_plan(it, probe)
             self._push(force=False)
         # analysis starts once every clip of the batch is probed, so the list fills quickly
         if self.auto_analyse:
-            for job in jobs:
-                iid = ids.get(id(job))
-                if iid is not None and iid in self._probes:
+            for iid, _ in new:
+                if self.closing:
+                    return
+                if iid in self._probes:
                     self._analyse_item(iid)
         self._push()
 
@@ -216,24 +289,30 @@ class Controller:
         from . import dedupe
 
         with self._an_lock:
+            if self.closing:
+                return
             with self._lock:
                 it, probe, job = self._item(iid), self._probes.get(iid), self._jobs.get(iid)
                 if not (it and probe and job):
                     return
                 plan = make_plan(probe, self.mode, self._rec().tolerance)
-                if plan.action == "skip":
-                    it.update(analysis="skip", dups=None, dup_pct=0.0)
-                    self._push(force=False)
-                    return
                 key = self._plan_key(plan)
                 cached = self._analysis.get(iid)
-                if cached and cached["key"] == key:
-                    self._apply_flags(iid)
-                    self._push(force=False)
-                    return
-                it.update(analysis="running", analysis_pct=0.0)
-            self._push(force=False)
-            expected = max(1, probe.frames)
+                if plan.action == "skip":
+                    it.update(analysis="skip", dups=None, dup_pct=0.0)
+                    todo = False
+                elif cached and cached["key"] == key:
+                    self._apply_flags(iid)             # keeps manual edits made for this plan
+                    todo = False
+                else:
+                    it.update(analysis="running", analysis_pct=0.0)
+                    todo = True
+                self._an_cancel.clear()
+                self._an_current = iid if todo else None
+            self._push()
+            if not todo:
+                return
+            expected = expected_frames(probe, plan)
 
             def progress(done: int) -> None:
                 with self._lock:
@@ -244,97 +323,133 @@ class Controller:
 
             try:
                 diffs = dedupe.frame_diffs(self._rec().ffmpeg, job.src, dedupe.decode_filter(plan),
-                                           probe.width, probe.height, None, progress)
+                                           probe.width, probe.height, self._an_cancel, progress)
+            except Cancelled:
+                with self._lock:
+                    self._an_current = None
+                    cur = self._item(iid)
+                    if cur:
+                        cur.update(analysis="pending" if self.auto_analyse else "off",
+                                   analysis_pct=0.0)
+                if not self.closing:
+                    self._push()
+                return
             except Exception as exc:  # noqa: BLE001
                 with self._lock:
+                    self._an_current = None
                     cur = self._item(iid)
                     if cur:
                         cur.update(analysis="error", message="analysis failed: %s" % exc)
                 self._push()
                 return
             with self._lock:
+                self._an_current = None
                 if self._item(iid) is None:
                     return
                 self._analysis[iid] = {"key": key, "diffs": diffs,
                                        "fps": float(plan.target or probe.fps)}
                 self._apply_flags(iid)
-            self._push(force=False)
+            self._push()
 
     def _apply_flags(self, iid: int) -> None:
-        """Detection from the stored differences: instant, no decoding. Lock must be held."""
+        """Detection from the stored differences: instant, no decoding. Lock must be held.
+
+        Manual edits made for the same rate plan are kept; ``reset_flags`` drops them.
+        """
         from . import dedupe
 
         it, a = self._item(iid), self._analysis.get(iid)
         if not it or not a:
             return
-        flagged = dedupe.detect_duplicates(a["diffs"], self.sensitivity)
+        cur = self._flags.get(iid)
+        if cur and cur.get("manual") and cur.get("key") == a["key"]:
+            flagged = list(cur["flagged"])
+            manual = True
+        else:
+            flagged = dedupe.detect_duplicates(a["diffs"], self.sensitivity)
+            self._flags[iid] = {"sens": self.sensitivity, "key": a["key"], "flagged": flagged}
+            manual = False
         n = len(a["diffs"]) + 1
-        self._flags[iid] = {"sens": self.sensitivity, "key": a["key"], "flagged": flagged}
         it.update(analysis="done", analysis_pct=100.0, dups=len(flagged),
                   dup_pct=round(100.0 * len(flagged) / max(1, n), 1),
-                  runs=dedupe.run_counts(flagged))
+                  runs=dedupe.run_counts(flagged), manual=manual)
         it["tl_v"] = it.get("tl_v", 0) + 1
 
     def _analyse_all(self) -> None:
         for iid in [i["id"] for i in list(self._items)]:
+            if self.closing:
+                return
             if iid in self._probes:
                 self._analyse_item(iid)
         self._push()
 
     def analyse_now(self) -> None:
         """Analysis on demand (when automatic analysis is switched off)."""
+        if self.closing:
+            return
         threading.Thread(target=self._analyse_all, daemon=True).start()
+
+    def _stop_analysis(self, iid: Optional[int] = None) -> None:
+        """Stop the analysis in progress (of ``iid`` only, when given)."""
+        with self._lock:
+            if self._an_current is not None and (iid is None or self._an_current == iid):
+                self._an_cancel.set()
 
     def get_timeline(self, iid: int) -> Optional[dict]:
         """Motion curve and held frame runs of one analysed clip, for the timeline."""
         from . import dedupe
 
         with self._lock:
+            it = self._item(int(iid))
             a, f = self._analysis.get(int(iid)), self._flags.get(int(iid))
-            if not a or not f:
+            if not a or not f or not it:
                 return None
-            return dedupe.timeline_data(a["diffs"], f["flagged"], a["fps"])
+            tl = dedupe.timeline_data(a["diffs"], f["flagged"], a["fps"])
+            tl.update(v=it["tl_v"], manual=bool(f.get("manual")))
+            return tl
 
     # ------------------------------------------------------------ manual flag editing
     def set_flags(self, iid: int, flagged: List[int]) -> Optional[dict]:
-        """Replace the flagged frame list for one clip (manual edits from the UI).
+        """Replace the held frame list of one clip (manual edits from the page).
 
-        Returns the updated timeline data or None if the clip is not analysed.
+        Frame 0 cannot be held (it has no predecessor). Returns the new timeline, or None
+        when the clip is not analysed or the list is not a list of frame numbers.
         """
-        from . import dedupe
-
-        with self._lock:
+        try:
             iid = int(iid)
+            wanted = sorted({int(f) for f in flagged})
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
             it = self._item(iid)
             a = self._analysis.get(iid)
             if not it or not a:
                 return None
-            flagged_clean = sorted(set(int(f) for f in flagged))
             n = len(a["diffs"]) + 1
-            # clamp to valid range [1, n-1]
-            flagged_clean = [f for f in flagged_clean if 1 <= f < n]
+            clean = [f for f in wanted if 1 <= f < n]
             existing = self._flags.get(iid, {})
-            self._flags[iid] = {
-                "sens": existing.get("sens", self.sensitivity),
-                "key": existing.get("key", a["key"]),
-                "flagged": flagged_clean,
-                "manual": True,
-            }
-            it.update(dups=len(flagged_clean),
-                      dup_pct=round(100.0 * len(flagged_clean) / max(1, n), 1),
-                      runs=dedupe.run_counts(flagged_clean))
-            it["tl_v"] = it.get("tl_v", 0) + 1
-            tl = dedupe.timeline_data(a["diffs"], flagged_clean, a["fps"])
+            self._flags[iid] = {"sens": existing.get("sens", self.sensitivity),
+                                "key": a["key"], "flagged": clean, "manual": True}
+            self._apply_flags(iid)
         self._push()
-        return tl
+        return self.get_timeline(iid)
+
+    def reset_flags(self, iid: int) -> Optional[dict]:
+        """Drop the manual edits of one clip: back to the automatic detection."""
+        iid = int(iid)
+        with self._lock:
+            if iid not in self._analysis:
+                return None
+            self._flags.pop(iid, None)
+            self._apply_flags(iid)
+        self._push()
+        return self.get_timeline(iid)
 
     def get_video_path(self, iid: int) -> Optional[str]:
-        """Return the absolute path of the source clip (used by the video server)."""
+        """Absolute path of the source clip (served to the preview)."""
         with self._lock:
             job = self._jobs.get(int(iid))
-            if job is None:
-                return None
-            return str(job.src)
+            return str(job.src) if job else None
 
     # ------------------------------------------------------------ settings
     def set_repair_modes(self, modes: List[str]) -> None:
@@ -386,10 +501,7 @@ class Controller:
         self.sensitivity = value
         with self._lock:
             for iid in list(self._analysis):
-                # don't override manual edits
-                f = self._flags.get(iid, {})
-                if not f.get("manual"):
-                    self._apply_flags(iid)             # instant: reuses the stored differences
+                self._apply_flags(iid)             # instant; manual edits are kept
         self._push()
 
     def set_engine(self, value: str) -> None:
@@ -402,19 +514,23 @@ class Controller:
         if self.running:
             return
         if mode != "auto":
-            mode = int(mode)
+            try:
+                mode = int(mode)
+            except (TypeError, ValueError):
+                return
             if mode not in STANDARD_RATES:
                 return
         if mode == self.mode:
             return
+        self._stop_analysis()                       # its frames belong to the old rate
         with self._lock:
             self.mode = mode
-            self._flags.clear()
+            self._flags.clear()                    # frame numbers change with the rate
             for it in self._items:
                 probe = self._probes.get(it["id"])
                 if probe is not None and it["status"] != "probing":
                     self._apply_plan(it, probe)
-                    it.update(dups=None, dup_pct=0.0,
+                    it.update(dups=None, dup_pct=0.0, manual=False,
                               analysis="pending" if self.auto_analyse else "off")
         self._push()
         if self.auto_analyse:
@@ -427,6 +543,7 @@ class Controller:
     def remove(self, iid: int) -> None:
         if self.running:
             return
+        self._stop_analysis(iid)
         with self._lock:
             self._items = [i for i in self._items if i["id"] != iid]
             for table in (self._jobs, self._probes, self._flags, self._analysis):
@@ -436,6 +553,7 @@ class Controller:
     def clear(self) -> None:
         if self.running:
             return
+        self._stop_analysis()
         with self._lock:
             self._items.clear()
             for table in (self._jobs, self._probes, self._flags, self._analysis):
@@ -447,6 +565,9 @@ class Controller:
     def start(self, wait: bool = False) -> bool:
         """Write every selected output for every clip. Can be called again and again:
         nothing has to be imported twice."""
+        if self.closing:
+            return False
+        rec = self._rec()
         with self._lock:
             if self.running:
                 return False
@@ -454,10 +575,12 @@ class Controller:
             if not todo:
                 return False
             self.running = True
+            rec.reset()                            # before the thread: a Cancel from now on is kept
             for it in todo:
                 it.update(status="queued", pct=0.0, message="", results=[])
         self._push()
         t = threading.Thread(target=self._run, args=([i["id"] for i in todo],), daemon=True)
+        self._worker = t
         t.start()
         if wait:
             t.join()
@@ -475,14 +598,14 @@ class Controller:
                 src = str(self._jobs[i].src)
                 c = self._flags.get(i)
                 plan = make_plan(self._probes[i], self.mode, rec.tolerance)
-                if c and (c.get("manual") or
-                          (c["sens"] == self.sensitivity and c["key"] == self._plan_key(plan))):
+                if c and c["key"] == self._plan_key(plan) and (
+                        c.get("manual") or c["sens"] == self.sensitivity):
                     flags[src] = c["flagged"]
                 for m in modes:           # redone on purpose: the user pressed Recode again
                     if "%d|%s" % (i, m) in self._processed:
                         force.add("%s|%s" % (src, m))
-        jobs = [self._jobs[i] for i in ids]
-        by_src = {str(self._jobs[i].src): i for i in ids}
+            jobs = [self._jobs[i] for i in ids]
+            by_src = {str(self._jobs[i].src): i for i in ids}
 
         def on_event(job: Job, kind: str, info: dict) -> None:
             iid = by_src[str(job.src)]
@@ -509,14 +632,15 @@ class Controller:
 
         try:
             rec.run(jobs, self.mode, on_event, overwrite=force, flags=flags,
-                    variants=variants, use_suffix=self.use_suffix)
+                    variants=variants, use_suffix=self.use_suffix, reset=False)
         finally:
             with self._lock:
                 self.running = False
                 for it in self._items:
                     if it["status"] in ("queued", "running"):
                         it["status"] = "ready"      # cancelled: can be started again
-            self._push()
+            if not self.closing:
+                self._push()
 
     def _repair_options(self, mode: str):
         if mode == "off":
@@ -529,8 +653,24 @@ class Controller:
                              sensitivity=self.sensitivity, engine=self.engine)
 
     def cancel(self) -> None:
-        if self._recoder and self.running:
+        if self.running:
+            self._rec().cancel()
+
+    def stop_now(self) -> None:
+        """Window closing: stop everything at once, without waiting (safe from the GUI thread)."""
+        self.closing = True
+        self._an_cancel.set()
+        if self._recoder is not None:
             self._recoder.cancel()
+        kill_all(timeout=0.5)
+
+    def shutdown(self, timeout: float = 10.0) -> None:
+        """Stop the analysis and the encoding, kill their processes, wait for the threads."""
+        self.stop_now()
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout)
+        kill_all()
 
     def output_dirs(self) -> List[str]:
         with self._lock:
@@ -543,134 +683,39 @@ class Controller:
 
 
 # --------------------------------------------------------------------------
-# Minimal single-file HTTP server for the video preview
+# the object exposed to the page
 # --------------------------------------------------------------------------
-
-class _VideoServer:
-    """Serves one video file at a time on a random localhost port."""
-
-    def __init__(self) -> None:
-        import http.server
-        import socket
-
-        self._lock = threading.Lock()
-        self._path: Optional[str] = None
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            server_instance: "_VideoServer"
-
-            def do_GET(self) -> None:
-                srv = self.server_instance  # type: ignore[attr-defined]
-                with srv._lock:
-                    p = srv._path
-                if not p:
-                    self.send_error(404)
-                    return
-                try:
-                    size = os.path.getsize(p)
-                    self.send_response(206 if "Range" in self.headers else 200)
-                    self.send_header("Content-Type", "video/mp4")
-                    self.send_header("Accept-Ranges", "bytes")
-                    rng = self.headers.get("Range", "")
-                    start, end = 0, size - 1
-                    if rng.startswith("bytes="):
-                        parts = rng[6:].split("-")
-                        if parts[0]:
-                            start = int(parts[0])
-                        if parts[1]:
-                            end = int(parts[1])
-                    length = end - start + 1
-                    self.send_header("Content-Length", str(length))
-                    self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    with open(p, "rb") as fh:
-                        fh.seek(start)
-                        remaining = length
-                        while remaining:
-                            chunk = fh.read(min(65536, remaining))
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            def log_message(self, *_) -> None:  # silence access log
-                pass
-
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        self._port: int = sock.getsockname()[1]
-        sock.close()
-
-        Handler.server_instance = self  # type: ignore[attr-defined]
-        self._server = http.server.HTTPServer(("127.0.0.1", self._port), Handler)
-        t = threading.Thread(target=self._server.serve_forever, daemon=True)
-        t.start()
-
-    @property
-    def port(self) -> int:
-        return self._port
-
-    def set_path(self, path: Optional[str]) -> None:
-        with self._lock:
-            self._path = path
-
-    def url_for(self, path: str) -> str:
-        self.set_path(path)
-        return "http://127.0.0.1:%d/video" % self._port
-
-
-_video_server: Optional["_VideoServer"] = None
-_video_server_lock = threading.Lock()
-
-
-def _get_video_server() -> "_VideoServer":
-    global _video_server
-    with _video_server_lock:
-        if _video_server is None:
-            _video_server = _VideoServer()
-        return _video_server
-
 
 class Api:
     """Object exposed to the page as window.pywebview.api."""
 
     def __init__(self) -> None:
         self._window = None
+        self._closed = False
         self._c = Controller(self._push)
 
     def _attach(self, window) -> None:
         self._window = window
-        # Silent update check at startup
-        threading.Thread(target=self._check_update_silent, daemon=True).start()
 
     def _push(self, state: dict) -> None:
-        if self._window is not None:
+        if self._window is not None and not self._closed:
             self._window.evaluate_js("window.render(%s)" % json.dumps(state))
-
-    def _check_update_silent(self) -> None:
-        """Fetch the latest version in the background and notify the UI if newer."""
-        latest = _fetch_latest_version()
-        if latest and latest.lstrip("v") != __version__:
-            payload = json.dumps({"latest": latest, "current": __version__})
-            if self._window is not None:
-                self._window.evaluate_js("window.onUpdateAvailable && window.onUpdateAvailable(%s)" % payload)
 
     # --- called by the page
     def get_state(self) -> dict:
         return self._c.state()
 
     def check_update(self) -> dict:
-        """Manual update check triggered by the UI (↻ button)."""
-        latest = _fetch_latest_version()
-        current = __version__
-        return {
-            "latest": latest,
-            "current": current,
-            "up_to_date": latest is None or latest.lstrip("v") == current,
-        }
+        """Update check, asked by the page once at start and by the refresh button."""
+        return check_for_update()
+
+    def open_url(self, url) -> bool:
+        """Open a release page of FrameSnap in the browser (any other address is refused)."""
+        if not safe_release_url(url):
+            return False
+        import webbrowser
+
+        return bool(webbrowser.open(url))
 
     def add_paths(self, paths: List[str]) -> int:
         return self._c.add_paths([p for p in paths if p])
@@ -719,27 +764,20 @@ class Api:
         return self._c.get_timeline(int(iid))
 
     def set_flags(self, iid, flagged) -> Optional[dict]:
-        """Update the flagged frame list for clip ``iid`` (manual add/remove from the UI)."""
+        """Replace the held frame list of clip ``iid`` (manual add or remove in the page)."""
+        if not isinstance(flagged, (list, tuple)):
+            return None
         return self._c.set_flags(int(iid), list(flagged))
 
-    def add_frame(self, iid, frame) -> None:
-        flagged = list(self._c._flags.get(int(iid), {}).get("flagged", []))
-        if frame not in flagged:
-            flagged.append(frame)
-        self._c.set_flags(int(iid), flagged)
-
-    def remove_frame(self, iid, frame) -> None:
-        flagged = list(self._c._flags.get(int(iid), {}).get("flagged", []))
-        if frame in flagged:
-            flagged.remove(frame)
-        self._c.set_flags(int(iid), flagged)
+    def reset_flags(self, iid) -> Optional[dict]:
+        return self._c.reset_flags(int(iid))
 
     def get_video_path(self, iid) -> Optional[str]:
-        """Return an http://localhost URL the <video> element can stream."""
+        """A secret http://127.0.0.1 URL the <video> element can stream (see preview.py)."""
         path = self._c.get_video_path(int(iid))
         if path is None:
             return None
-        return _get_video_server().url_for(path)
+        return preview.get_server().url_for(path)
 
     def set_sensitivity(self, value) -> None:
         self._c.set_sensitivity(str(value))
@@ -755,13 +793,28 @@ class Api:
 
     def clear(self) -> None:
         self._c.clear()
+        if not self._c.running:
+            preview.revoke()
 
     def remove(self, iid) -> None:
+        path = self._c.get_video_path(int(iid))
         self._c.remove(int(iid))
+        if path and self._c.get_video_path(int(iid)) is None:
+            preview.revoke(path)
 
     def open_output(self) -> None:
         for d in self._c.output_dirs()[:5]:
             _open_path(d)
+
+    # --- lifecycle (not called by the page)
+    def _stop_now(self, *_) -> None:
+        self._closed = True
+        self._c.stop_now()
+
+    def _shutdown(self) -> None:
+        self._closed = True
+        self._c.shutdown()
+        preview.shutdown()
 
 
 def _open_path(path: str) -> None:
@@ -787,17 +840,19 @@ def resource_dir() -> Path:
 
 def selftest() -> int:
     """Encode a synthetic NTSC clip with the bundled ffmpeg and check the result."""
+    work = Path(tempfile.mkdtemp(prefix="framesnap-selftest-"))
     try:
         ffmpeg = find_ffmpeg()
-        work = Path(tempfile.mkdtemp(prefix="framesnap-selftest-"))
         src = work / "selftest.mp4"
-        subprocess.run([
+        r = run_capture([
             ffmpeg, "-v", "error", "-y",
             "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30000/1001",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest", str(src),
-        ], check=True, stdin=subprocess.DEVNULL, **subprocess_kwargs())
+        ])
+        if r.returncode != 0:
+            return _selftest_report(False, "ffmpeg cannot encode: %s" % (r.stderr or "").strip()[-200:])
         rec = Recoder(ffmpeg, preset="ultrafast")
         res = rec.run(collect_jobs([src]), "auto")[0]
         out = probe_file(ffmpeg, res.job.dst)
@@ -810,6 +865,10 @@ def selftest() -> int:
         if extra.startswith("FAILED"):
             return _selftest_report(False, msg + " | " + extra)
         msg += " | " + extra
+        served = _selftest_preview(src)
+        if served.startswith("FAILED"):
+            return _selftest_report(False, msg + " | " + served)
+        msg += " | " + served
         if (sys.platform == "darwin" or sys.platform.startswith("win")
                 or os.environ.get("FRAMESNAP_SELFTEST_GUI")):
             import webview  # noqa: F401
@@ -826,6 +885,24 @@ def selftest() -> int:
         return _selftest_report(True, msg)
     except Exception as exc:  # noqa: BLE001
         return _selftest_report(False, "%s: %s" % (type(exc).__name__, exc))
+    finally:
+        preview.shutdown()
+        kill_all()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _selftest_preview(src: Path) -> str:
+    """The preview server answers a range request with the right bytes."""
+    url = preview.get_server().url_for(str(src))
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-99"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = resp.read()
+        status = resp.status
+    with open(src, "rb") as fh:
+        want = fh.read(100)
+    if status != 206 or data != want:
+        return "FAILED preview server: status %s, %d bytes" % (status, len(data))
+    return "preview ok"
 
 
 def _selftest_repair(ffmpeg: str, src: Path, work: Path) -> str:
@@ -855,10 +932,8 @@ def _selftest_repair(ffmpeg: str, src: Path, work: Path) -> str:
     starts = False
     if rife.vulkan_runtime_present():
         try:
-            r = subprocess.run([str(exe)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, errors="replace", timeout=60,
-                               cwd=str(exe.parent), **subprocess_kwargs())
-            starts = "Usage" in (r.stdout or "")
+            r = run_capture([str(exe)], timeout=60)
+            starts = "Usage" in ((r.stdout or "") + (r.stderr or ""))
         except Exception:  # noqa: BLE001
             starts = False
     gpu = rife.gpu_check(force=True)
@@ -894,6 +969,10 @@ def main() -> None:
         min_size=(480, 700), background_color="#0f1013",
     )
     api._attach(window)
+    try:
+        window.events.closed += api._stop_now       # stops encoders even if start() hangs
+    except Exception:  # noqa: BLE001
+        pass
 
     def on_drop(event: dict) -> None:
         files = (event.get("dataTransfer") or {}).get("files", [])
@@ -914,6 +993,8 @@ def main() -> None:
                "On Windows this usually means the Microsoft Edge WebView2 Runtime is "
                "missing: https://go.microsoft.com/fwlink/p/?LinkId=2124703" % exc)
         raise
+    finally:
+        api._shutdown()
 
 
 def _fatal(message: str) -> None:

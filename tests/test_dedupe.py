@@ -9,7 +9,7 @@ import pytest
 from framesnap import core, dedupe, rife
 from framesnap.core import Recoder, collect_jobs, make_plan, probe_file
 from framesnap.dedupe import (
-    Interpolator, RepairOptions, analyse, detect_duplicates, frame_diffs, group_runs, repair,
+    Interpolator, RepairOptions, analyse, detect_duplicates, group_runs, repair,
 )
 
 FFMPEG = core.find_ffmpeg()
@@ -302,13 +302,15 @@ def test_software_device_names_are_recognised():
     assert not rife.is_software_device("NVIDIA GeForce RTX 4070")
 
 
-needs_rife = pytest.mark.skipif(
-    rife.find_rife() is None or not rife.gpu_check()["ok"],
-    reason="rife-ncnn-vulkan or a Vulkan device (even software) is not available")
+@pytest.fixture(scope="session")
+def rife_ok():
+    """Skips the test when RIFE cannot run here. Checked lazily: a GPU check can take 45 s,
+    which used to be spent at import time, even when no RIFE test was selected."""
+    if rife.find_rife() is None or not rife.gpu_check()["ok"]:
+        pytest.skip("rife-ncnn-vulkan or a Vulkan device (even software) is not available")
 
 
-@needs_rife
-def test_rife_midpoint_is_close_to_the_truth():
+def test_rife_midpoint_is_close_to_the_truth(rife_ok):
     frames = _frames()
     a, truth, b = frames[10], frames[11], frames[12]
     mid = rife.Rife().interpolate(a, b, [0.5])[0]
@@ -318,8 +320,7 @@ def test_rife_midpoint_is_close_to_the_truth():
     assert err_rife < err_copy
 
 
-@needs_rife
-def test_forced_gpu_engine_end_to_end_with_rife(tmp_path, held_clip):
+def test_forced_gpu_engine_end_to_end_with_rife(rife_ok, tmp_path, held_clip):
     probe, plan = _prep(held_clip)
     out = tmp_path / "gpu.mp4"
     rep = repair(FFMPEG, held_clip, out, probe, plan,
@@ -329,8 +330,7 @@ def test_forced_gpu_engine_end_to_end_with_rife(tmp_path, held_clip):
     assert probe_file(FFMPEG, out).frames == N
 
 
-@needs_rife
-def test_gpu_check_reports_device():
+def test_gpu_check_reports_device(rife_ok):
     r = rife.gpu_check(force=True)
     assert r["ok"] and r["device"]
 

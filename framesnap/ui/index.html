@@ -134,14 +134,13 @@
     background: color-mix(in srgb, #000 60%, var(--panel));
   }
   .preview-controls button {
-    color: var(--text); font-size: 15px; padding: 2px 6px; border-radius: 5px;
+    color: var(--text); font-size: 12px; padding: 2px 8px; border-radius: 5px;
     background: var(--panel); border: 1px solid var(--line);
   }
-  .preview-controls button:hover { border-color: var(--muted); }
-  #seekbar {
-    flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer;
-  }
-  .preview-time { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 70px; text-align: right; }
+  .preview-controls button:hover:not(:disabled) { border-color: var(--muted); }
+  .preview-controls button:disabled { opacity: .45; cursor: default; }
+  .preview-frame { flex: 1; text-align: center; color: var(--muted); font-size: 11.5px;
+                   font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* ---- flagged frame editor ---- */
   .flageditor {
@@ -152,7 +151,12 @@
     display: flex; justify-content: space-between; align-items: center;
     color: var(--muted); font-size: 12px; margin-bottom: 5px;
   }
-  .flageditor-head span { font-weight: 550; color: var(--text); }
+  .flageditor-head > span:first-child { font-weight: 550; color: var(--text); }
+  .flageditor-head .grow { flex: 1; }
+  .flag-manual { font-size: 11px; padding: 1px 6px; border-radius: 4px; color: var(--warn);
+                 background: color-mix(in srgb, var(--warn) 15%, var(--panel)); margin-left: 8px; }
+  .flag-reset { color: var(--accent); font-size: 12px; padding: 1px 4px; margin-left: 6px; }
+  .flag-reset:hover { text-decoration: underline; }
   #flagList {
     list-style: none; margin: 0; padding: 0;
     max-height: 120px; overflow-y: auto;
@@ -203,43 +207,33 @@
   .btn.small { padding: 4px 10px; font-weight: 500; }
   #error { color: var(--err); display: none; }
   #error.show { display: block; }
-  #update-banner {
-    display: none;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.75rem;
-    background: var(--accent, #f59e0b);
-    color: #fff;
-    font-size: 0.8rem;
-    border-radius: 4px;
-    margin-top: 6px;
-  }
+  .hrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .ver { color: var(--muted); font-size: 12px; font-weight: 500; margin-left: 4px; }
+  #btn-check-update { font-size: 15px; color: var(--muted); padding: 2px 6px; border-radius: 6px; }
+  #btn-check-update:hover:not(:disabled) { color: var(--text); }
+  #btn-check-update:disabled { opacity: .5; cursor: default; }
+  #update-banner { display: none; align-items: center; justify-content: space-between; gap: 10px;
+                   margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 12.5px;
+                   background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border: 1px solid var(--accent); }
   #update-banner.visible { display: flex; }
-  #update-banner a {
-    color: #fff;
-    font-weight: 600;
-    text-decoration: underline;
-    margin-left: 6px;
-  }
-  #btn-check-update {
-    margin-top: 4px;
-    font-size: 14px;
-    color: var(--muted);
-    padding: 2px 6px;
-  }
-  #btn-check-update:hover { color: var(--text); }
+  .banner-link { color: var(--accent); font-weight: 600; text-decoration: underline; padding: 0 2px; }
+  .update-note { color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 0; }
+  .update-note:empty { display: none; }
 </style>
 </head>
 <body>
 <div class="app">
   <header>
-    <h1>FrameSnap</h1>
-    <p data-t="tagline"></p>
-    <div id="update-banner">
-      <span id="update-banner-text">Nouvelle version disponible</span>
-      <a id="update-banner-link" href="#" target="_blank">Telecharger</a>
+    <div class="hrow">
+      <h1>FrameSnap<span class="ver" id="ver"></span></h1>
+      <button id="btn-check-update" data-t-title="update_check" data-t-label="update_check">&#x21BB;</button>
     </div>
-    <button id="btn-check-update" title="Verifier les mises a jour">&#x21BB;</button>
+    <p data-t="tagline"></p>
+    <div id="update-banner" role="status">
+      <span id="update-banner-text"></span>
+      <button id="update-banner-link" class="banner-link" data-t="update_download"></button>
+    </div>
+    <div id="update-note" class="update-note" role="status"></div>
   </header>
 
   <div id="drop" class="drop">
@@ -305,11 +299,11 @@
 
     <!-- video preview -->
     <div class="preview-wrap" id="previewWrap">
-<video id="preview" controls controlsList="nodownload" preload="metadata" crossorigin="anonymous"></video>
+      <video id="preview" controls controlsList="nodownload" preload="metadata" crossorigin="anonymous" playsinline></video>
       <div class="preview-controls">
-        <button id="playPause" title="Play/Pause">&#9654;</button>
-        <input type="range" id="seekbar" min="0" max="1000" value="0" step="1">
-        <span class="preview-time" id="previewTime">0:00 / 0:00</span>
+        <button id="framePrev" data-t-title="frame_prev" data-t-label="frame_prev">&#9664;</button>
+        <span class="preview-frame" id="previewFrame"></span>
+        <button id="frameNext" data-t-title="frame_next" data-t-label="frame_next">&#9654;</button>
       </div>
     </div>
 
@@ -317,6 +311,9 @@
     <div class="flageditor" id="flagEditor">
       <div class="flageditor-head">
         <span data-t="flags_title"></span>
+        <span class="flag-manual" id="flagManual" data-t="flags_manual" hidden></span>
+        <button class="flag-reset" id="flagReset" data-t="flags_reset" hidden></button>
+        <span class="grow"></span>
         <span id="flagCount" style="color:var(--muted)"></span>
       </div>
       <ul id="flagList"></ul>
@@ -388,11 +385,14 @@
       lg_double: "double", lg_triple: "triple", lg_more: "4 and more",
       tip_frame: "frame {f}  |  {t}", tip_double: "shown twice", tip_triple: "shown 3 times", tip_more: "shown {k} times",
       tl_foot: "{n} frames  |  {s} s  |  {fps} fps",
-      /* new */
       flags_title: "Held frames", flag_add: "Add", flag_add_cur: "Add current frame",
       flag_input_ph: "frame #",
       flag_tip_seek: "Go to frame", flag_tip_rm: "Remove",
-      tl_click: "Click on the timeline to seek"
+      flags_manual: "edited by hand", flags_reset: "Back to detection",
+      frame_prev: "Previous frame", frame_next: "Next frame", frame_pos: "frame {f} / {n}",
+      update_check: "Check for updates", update_available: "FrameSnap {v} is available.",
+      update_download: "Download", update_none: "FrameSnap {v} is up to date.",
+      update_failed: "Could not check for updates (offline?)."
     },
     fr: {
       tagline: "Ramenez vos clips à une cadence propre et constante.",
@@ -437,11 +437,14 @@
       lg_double: "double", lg_triple: "triple", lg_more: "4 et plus",
       tip_frame: "image {f}  |  {t}", tip_double: "montrée 2 fois", tip_triple: "montrée 3 fois", tip_more: "montrée {k} fois",
       tl_foot: "{n} images  |  {s} s  |  {fps} fps",
-      /* new */
       flags_title: "Images copiées", flag_add: "Ajouter", flag_add_cur: "Ajouter l'image courante",
       flag_input_ph: "n° d'image",
       flag_tip_seek: "Aller à l'image", flag_tip_rm: "Supprimer",
-      tl_click: "Cliquez sur la timeline pour naviguer"
+      flags_manual: "modifié à la main", flags_reset: "Revenir à la détection",
+      frame_prev: "Image précédente", frame_next: "Image suivante", frame_pos: "image {f} / {n}",
+      update_check: "Vérifier les mises à jour", update_available: "FrameSnap {v} est disponible.",
+      update_download: "Télécharger", update_none: "FrameSnap {v} est à jour.",
+      update_failed: "Impossible de vérifier les mises à jour (hors ligne ?)."
     }
   };
   var lang = /^fr/i.test(navigator.language || "") ? "fr" : "en";
@@ -461,10 +464,12 @@
 
   // ---- preview video state ----
   var previewIid = null;   // which iid the <video> is loaded for
-  var previewFps = 24;     // fps of the currently loaded clip
-  var previewTl = null;    // current timeline data
+  var previewFps = 24;     // frame rate of the analysed frames of the selected clip
+  var previewTl = null;    // timeline data of the selected clip (null while not analysed)
+  var previewFlags = [];   // held frame numbers of previewTl, computed once
   var vcursor = null;      // the green SVG cursor element
-  var seekTimer = null;
+  var update = null;       // last answer of check_update
+  var updateManual = false;
 
   function $(id) { return document.getElementById(id); }
   function fmt(s, o) { return s.replace(/\{(\w+)\}/g, function (_, k) { return o && o[k] != null ? o[k] : ""; }); }
@@ -490,6 +495,13 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-t-placeholder]"), function (el) {
       var v = T[el.getAttribute("data-t-placeholder")]; if (v != null) el.placeholder = v;
     });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-t-title]"), function (el) {
+      var v = T[el.getAttribute("data-t-title")]; if (v != null) el.title = v;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-t-label]"), function (el) {
+      var v = T[el.getAttribute("data-t-label")]; if (v != null) el.setAttribute("aria-label", v);
+    });
+    renderUpdate();
     $("list").setAttribute("data-empty", T.empty);
   }
   function fmtTime(sec) {
@@ -623,6 +635,7 @@
     var legend = $("tllegend"); legend.textContent = "";
     var body = $("tlbody"); body.textContent = "";
     vcursor = null;
+    previewTl = null; previewFlags = [];
     function note(txt) { var d = document.createElement("div"); d.className = "tlnote"; d.textContent = txt; body.appendChild(d); }
     if (!it) { note(T.tl_select); renderFlagEditor(null, null); return; }
     if (it.analysis === "running" || it.analysis === "pending") { note(fmt(T.tl_wait, { p: Math.round(it.analysis_pct || 0) })); renderFlagEditor(null, null); return; }
@@ -634,6 +647,7 @@
     if (!c.data) { note(T.tl_err); renderFlagEditor(null, null); return; }
     var tl = c.data;
     previewTl = tl;
+    previewFlags = flatFlagged(tl);
     previewFps = tl.fps || 24;
     var W = Math.max(300, Math.round(body.clientWidth || 560)), H = 124, top = 20, bot = 112, ph = bot - top;
 
@@ -696,10 +710,7 @@
     svg.addEventListener("click", function (e) {
       var r = svg.getBoundingClientRect(), w = r.width || 1;
       var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / w));
-      var vid = $("preview");
-      if (vid && vid.src && vid.duration) {
-        vid.currentTime = frac * vid.duration;
-      }
+      if (videoReady()) seekToFrame(Math.max(0, Math.min(tl.n - 1, Math.floor(frac * tl.n))));
     });
 
     svg.addEventListener("mousemove", function (e) {
@@ -746,28 +757,40 @@
     });
     return out;
   }
-
-  function kindClass(tl, frameIdx) {
-    // which run does this frame belong to?
+  function runOf(tl, frameIdx) {
     for (var i = 0; i < (tl.runs || []).length; i++) {
       var r = tl.runs[i];
-      if (frameIdx >= r[0] && frameIdx < r[0] + r[1]) {
-        return r[1] === 1 ? "sp1" : (r[1] === 2 ? "sp2" : "sp3");
-      }
+      if (frameIdx >= r[0] && frameIdx < r[0] + r[1]) return r;
     }
-    return "";
+    return null;
+  }
+  function kindClass(tl, frameIdx) {
+    var r = runOf(tl, frameIdx);
+    return r ? (r[1] === 1 ? "sp1" : (r[1] === 2 ? "sp2" : "sp3")) : "";
   }
   function kindLabel(tl, frameIdx) {
-    for (var i = 0; i < (tl.runs || []).length; i++) {
-      var r = tl.runs[i];
-      if (frameIdx >= r[0] && frameIdx < r[0] + r[1]) {
-        var k = r[1] + 1;
-        return k === 2 ? "x2" : (k === 3 ? "x3" : "x" + k);
-      }
-    }
-    return "x2";
+    var r = runOf(tl, frameIdx);
+    return "x" + (r ? r[1] + 1 : 2);
   }
-
+  function videoReady() {
+    var vid = $("preview");
+    return !!(vid && vid.getAttribute("src") && isFinite(vid.duration) && vid.duration > 0);
+  }
+  // frame shown at time t. Frame f is shown from f / fps (its nominal start) on.
+  function frameAt(t) {
+    var n = previewTl ? previewTl.n : Infinity;
+    return Math.max(0, Math.min(n - 1, Math.floor(t * previewFps + 1e-6)));
+  }
+  function getCurrentVideoFrame() {
+    return videoReady() ? frameAt($("preview").currentTime) : -1;
+  }
+  function seekToFrame(frame) {
+    if (!videoReady()) return;
+    var vid = $("preview");
+    // the middle of the frame: safe even when the source timestamps are slightly irregular
+    vid.currentTime = Math.min(vid.duration, (frame + 0.5) / previewFps);
+    onVideoTimeUpdate();
+  }
   function renderFlagEditor(it, tl) {
     var ed = $("flagEditor");
     var fl = $("flagList");
@@ -779,14 +802,13 @@
       return;
     }
     ed.classList.add("visible");
-    var flags = flatFlagged(tl);
+    var flags = previewFlags;
+    var manual = !!(it.manual || tl.manual);
+    $("flagManual").hidden = !manual;
+    $("flagReset").hidden = !manual;
+    $("flagReset").disabled = !!state.running;
     fc.textContent = flags.length;
-
-    // determine which frame is "current" in the video
-    var vid = $("preview");
-    var curFrame = (vid && vid.duration && previewFps)
-      ? Math.round(vid.currentTime * previewFps) : -1;
-
+    var curFrame = getCurrentVideoFrame();
     fl.textContent = "";
     if (!flags.length) {
       var empty = document.createElement("li");
@@ -797,6 +819,7 @@
     } else {
       flags.forEach(function (f) {
         var li = document.createElement("li");
+        li.setAttribute("data-frame", f);
         if (f === curFrame) li.className = "hl";
         var fspan = document.createElement("span"); fspan.className = "flag-frame";
         fspan.textContent = "#" + f;
@@ -808,166 +831,123 @@
         var seekBtn = document.createElement("button");
         seekBtn.className = "flag-seek"; seekBtn.title = T.flag_tip_seek;
         seekBtn.textContent = "\u25B6";
-        (function (frame) {
-          seekBtn.addEventListener("click", function () { seekToFrame(frame); });
-        })(f);
+        seekBtn.addEventListener("click", function () { seekToFrame(f); });
         var rmBtn = document.createElement("button");
         rmBtn.className = "flag-rm"; rmBtn.title = T.flag_tip_rm;
         rmBtn.textContent = "\u00d7";
-        (function (frame, iid) {
-          rmBtn.addEventListener("click", function () { removeFlag(iid, frame, tl); });
-        })(f, it.id);
+        rmBtn.addEventListener("click", function () { removeFlag(it.id, f); });
         li.appendChild(fspan); li.appendChild(tspan); li.appendChild(kspan);
         li.appendChild(seekBtn); li.appendChild(rmBtn);
         fl.appendChild(li);
       });
     }
-
-    // "Add current frame" button: enable only when video is loaded
-    var addCurBtn = $("flagAddCur");
-    var vid2 = $("preview");
-    addCurBtn.disabled = !(vid2 && vid2.src && vid2.duration);
+    $("flagAddCur").disabled = !videoReady();
   }
-
-  function getCurrentVideoFrame() {
-    var vid = $("preview");
-    if (!vid || !vid.src || !vid.duration) return -1;
-    return Math.round(vid.currentTime * previewFps);
+  function applyFlagAnswer(newTl) {
+    if (!newTl) return;
+    var it = selected();
+    if (!it) return;
+    if (newTl.v != null) it.tl_v = newTl.v;     // the pushed state may arrive after this answer
+    if (newTl.manual != null) it.manual = newTl.manual;
+    tlCache[it.id] = { v: it.tl_v, data: newTl };
+    renderTimeline();
   }
-
-  function addFlag(iid, frame, currentTl) {
-    if (frame < 1) return;
-    var flags = flatFlagged(currentTl);
-    if (flags.indexOf(frame) >= 0) return;  // already there
-    flags.push(frame);
-    flags.sort(function (a, b) { return a - b; });
+  function sendFlags(iid, flags) {
     var p = call("set_flags", iid, flags);
-    if (!p || !p.then) return;
-    p.then(function (newTl) {
-      if (!newTl) return;
-      var it = selected();
-      if (!it) return;
-      tlCache[it.id] = { v: it.tl_v, data: newTl };
-      previewTl = newTl;
-      renderTimeline();
-    });
+    if (p && p.then) p.then(applyFlagAnswer, function () {});
   }
-
-  function removeFlag(iid, frame, currentTl) {
-    var flags = flatFlagged(currentTl).filter(function (f) { return f !== frame; });
-    var p = call("set_flags", iid, flags);
-    if (!p || !p.then) return;
-    p.then(function (newTl) {
-      if (!newTl) return;
-      var it = selected();
-      if (!it) return;
-      tlCache[it.id] = { v: it.tl_v, data: newTl };
-      previewTl = newTl;
-      renderTimeline();
-    });
+  function addFlag(iid, frame) {
+    if (!previewTl || frame < 1 || frame >= previewTl.n) return;
+    if (previewFlags.indexOf(frame) >= 0) return;  // already there
+    sendFlags(iid, previewFlags.concat([frame]).sort(function (a, b) { return a - b; }));
   }
-
-  // "Add" button
+  function removeFlag(iid, frame) {
+    sendFlags(iid, previewFlags.filter(function (f) { return f !== frame; }));
+  }
   $("flagAddBtn").addEventListener("click", function () {
     var it = selected();
     if (!it || !previewTl) return;
     var val = parseInt($("flagInput").value, 10);
     if (isNaN(val) || val < 1) return;
-    addFlag(it.id, val, previewTl);
+    addFlag(it.id, val);
     $("flagInput").value = "";
   });
   $("flagInput").addEventListener("keydown", function (e) {
     if (e.key === "Enter") $("flagAddBtn").click();
   });
-
-  // "Add current frame" button
   $("flagAddCur").addEventListener("click", function () {
     var it = selected();
     if (!it || !previewTl) return;
-    var f = getCurrentVideoFrame();
-    if (f < 1) return;
-    addFlag(it.id, f, previewTl);
+    addFlag(it.id, getCurrentVideoFrame());
+  });
+  $("flagReset").addEventListener("click", function () {
+    var it = selected();
+    if (!it) return;
+    var p = call("reset_flags", it.id);
+    if (p && p.then) p.then(applyFlagAnswer, function () {});
   });
 
   // --------------------------------------------------------- video preview
-  function loadPreview(iid) {
+  function unloadPreview() {
     var vid = $("preview");
-    var wrap = $("previewWrap");
-    if (!iid) {
-      wrap.classList.remove("visible");
-      vid.src = "";
-      previewIid = null;
-      return;
+    $("previewWrap").classList.remove("visible");
+    try { vid.pause(); } catch (e) {}
+    if (vid.getAttribute("src") != null) {
+      vid.removeAttribute("src");     // releases the file and the connection
+      try { vid.load(); } catch (e) {}
     }
+    previewIid = null;
+  }
+  function loadPreview(iid) {
+    if (iid == null) { unloadPreview(); return; }
     if (previewIid === iid) return;  // already loaded
+    unloadPreview();
     previewIid = iid;
     var p = call("get_video_path", iid);
-    if (!p || !p.then) { wrap.classList.remove("visible"); return; }
+    if (!p || !p.then) return;
     p.then(function (url) {
-      if (!url) { wrap.classList.remove("visible"); return; }
-      vid.src = url;
-      vid.load();
-      wrap.classList.add("visible");
-    });
+      if (previewIid !== iid) return;            // another clip was selected meanwhile
+      if (!url) { unloadPreview(); return; }
+      var vid = $("preview");
+      vid.setAttribute("src", url);
+      try { vid.load(); } catch (e) {}
+      $("previewWrap").classList.add("visible");
+    }, function () {});
   }
-
-  function seekToFrame(frame) {
-    var vid = $("preview");
-    if (!vid || !vid.duration) return;
-    vid.currentTime = frame / previewFps;
-  }
-
-  // play/pause button
-  $("playPause").addEventListener("click", function () {
-    var vid = $("preview");
-    if (!vid || !vid.src) return;
-    if (vid.paused) vid.play(); else vid.pause();
+  $("framePrev").addEventListener("click", function () {
+    var f = getCurrentVideoFrame();
+    if (f > 0) seekToFrame(f - 1);
   });
-
-  // seekbar -> video
-  $("seekbar").addEventListener("input", function () {
-    var vid = $("preview");
-    if (!vid || !vid.duration) return;
-    vid.currentTime = (parseInt(this.value, 10) / 1000) * vid.duration;
+  $("frameNext").addEventListener("click", function () {
+    var f = getCurrentVideoFrame();
+    if (f >= 0 && (!previewTl || f < previewTl.n - 1)) seekToFrame(f + 1);
   });
-
-  var vid = $("preview");
-
-  // video -> seekbar + time display + green cursor + flag list highlight
+  // video -> frame readout, green cursor, flag list highlight
   function onVideoTimeUpdate() {
     var vid = $("preview");
-    if (!vid) return;
-    var t = vid.currentTime, dur = vid.duration || 1;
-    $("seekbar").value = Math.round((t / dur) * 1000);
-    $("previewTime").textContent = fmtTime(t) + " / " + fmtTime(dur);
-    $("playPause").textContent = vid.paused ? "\u25B6" : "\u23F8";
-
-    // update green vcursor on the SVG timeline
+    var ready = videoReady();
+    $("framePrev").disabled = $("frameNext").disabled = $("flagAddCur").disabled = !ready;
+    if (!ready) { $("previewFrame").textContent = ""; return; }
+    var f = frameAt(vid.currentTime);
+    $("previewFrame").textContent = fmt(T.frame_pos, { f: f, n: previewTl ? previewTl.n : "?" }) +
+      "  \u00b7  " + fmtTime(vid.currentTime);
     if (vcursor && previewTl && previewTl.seconds) {
-      var frac = t / previewTl.seconds;
-      var W = parseFloat(vcursor.closest("svg") ? vcursor.closest("svg").getAttribute("viewBox").split(" ")[2] : 560);
-      vcursor.setAttribute("x1", frac * W);
-      vcursor.setAttribute("x2", frac * W);
+      var svg = vcursor.closest("svg");
+      var W = svg ? parseFloat(svg.getAttribute("viewBox").split(" ")[2]) : 560;
+      var x = Math.min(1, vid.currentTime / previewTl.seconds) * W;
+      vcursor.setAttribute("x1", x);
+      vcursor.setAttribute("x2", x);
       vcursor.style.display = "";
     }
-
-    // highlight current frame in flag list (throttled to animation frame)
-    if (previewTl) {
-      var curFrame = Math.round(t * previewFps);
-      var items = $("flagList").querySelectorAll("li");
-      Array.prototype.forEach.call(items, function (li, idx) {
-        var flags = previewTl ? flatFlagged(previewTl) : [];
-        li.classList.toggle("hl", flags[idx] === curFrame);
-      });
-    }
+    Array.prototype.forEach.call($("flagList").querySelectorAll("li[data-frame]"), function (li) {
+      li.classList.toggle("hl", +li.getAttribute("data-frame") === f);
+    });
   }
-  vid.addEventListener("timeupdate", onVideoTimeUpdate);
-  vid.addEventListener("play", onVideoTimeUpdate);
-  vid.addEventListener("pause", onVideoTimeUpdate);
+  var vid = $("preview");
+  ["timeupdate", "seeked", "play", "pause"].forEach(function (n) { vid.addEventListener(n, onVideoTimeUpdate); });
   vid.addEventListener("loadedmetadata", function () {
     onVideoTimeUpdate();
-    var it = selected();
-    renderFlagEditor(it, previewTl);
+    renderFlagEditor(selected(), previewTl);
   });
 
   // ------------------------------------------------------- the rest
@@ -989,12 +969,10 @@
     if (s) state = s;
     var r = rep();
     if (selId == null || !state.items.some(function (i) { return i.id === selId; })) {
-      var newId = state.items.length ? state.items[0].id : null;
-      if (newId !== selId) {
-        selId = newId;
-        if (selId) loadPreview(selId);
-      }
+      selId = state.items.length ? state.items[0].id : null;
     }
+    loadPreview(selId);                       // unloads it when the list is empty
+    $("ver").textContent = state.version ? " " + state.version : "";
     Array.prototype.forEach.call($("seg").children, function (b) {
       b.setAttribute("aria-checked", String(b.getAttribute("data-mode")) === String(state.mode) ? "true" : "false");
       b.disabled = !!state.running;
@@ -1108,25 +1086,35 @@
     var p = call("get_state");
     if (p && p.then) p.then(render);
   });
-  // --- Verification de mise a jour ---
-  async function checkUpdate(showSpinner) {
-    var btn = document.getElementById('btn-check-update');
-    if (showSpinner && btn) btn.disabled = true;
-    try {
-      var result = await pywebview.api.check_update();
-      if (result && result.update_available) {
-        document.getElementById('update-banner-text').textContent =
-          'Nouvelle version v' + result.latest + ' disponible';
-        document.getElementById('update-banner-link').href =
-          'https://github.com/le-wib/framesnap/releases/tag/v' + result.latest;
-        document.getElementById('update-banner').classList.add('visible');
-      }
-    } catch(e) {}
-    finally { if (btn) btn.disabled = false; }
+  // ------------------------------------------------------- update check
+  function renderUpdate() {
+    var banner = $("update-banner"), note = $("update-note");
+    var u = update;
+    banner.classList.toggle("visible", !!(u && u.update_available));
+    $("update-banner-text").textContent = u && u.update_available ? fmt(T.update_available, { v: u.latest }) : "";
+    note.textContent = "";
+    if (u && updateManual && !u.update_available) {
+      note.textContent = u.error ? T.update_failed : fmt(T.update_none, { v: u.current });
+    }
   }
-  document.getElementById('btn-check-update')
-    .addEventListener('click', function() { checkUpdate(true); });
-  window.addEventListener('pywebviewready', function() { checkUpdate(false); });
+  function checkUpdate(manual) {
+    var btn = $("btn-check-update");
+    var p = call("check_update");
+    if (!p || !p.then) return;
+    btn.disabled = true;
+    p.then(function (res) {
+      btn.disabled = false;
+      if (!res) return;
+      update = res;
+      updateManual = !!manual;
+      renderUpdate();
+    }, function () { btn.disabled = false; });
+  }
+  $("btn-check-update").addEventListener("click", function () { checkUpdate(true); });
+  $("update-banner-link").addEventListener("click", function () {
+    if (update && update.url) call("open_url", update.url);
+  });
+  window.addEventListener("pywebviewready", function () { checkUpdate(false); });
 
   window.__framesnap = {
     setLang: function (l) { lang = l; T = I18N[l]; applyI18n(); render(); },

@@ -2,10 +2,9 @@
 
 import pytest
 
-from framesnap import cli, core, rife
+from framesnap import cli
 
-from .test_core import FFMPEG, clips  # noqa: F401
-from .test_dedupe import HELD, N, held_clip  # noqa: F401
+from .test_dedupe import HELD
 
 
 def _held(tmp_path, held_clip):

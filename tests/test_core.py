@@ -229,10 +229,10 @@ def test_no_audio_clip_works(tmp_path, clips):
 def test_existing_output_is_skipped_then_overwritten_on_demand(tmp_path, clips):
     res, job = _recode(tmp_path, clips["fps25"], "auto")
     assert res.status == "copied" or res.status == "done"
-    rec = Recoder(FFMPEG, preset="ultrafast", skip_existing=True)
-    assert rec.run([job], 30)[0].status == "exists"
-    rec = Recoder(FFMPEG, preset="ultrafast", skip_existing=False)
-    assert rec.run([job], 30)[0].status == "done"
+    rec = Recoder(FFMPEG, preset="ultrafast", crf=18, skip_existing=True)
+    assert rec.run([job], "auto")[0].status == "exists"         # same settings: kept
+    rec = Recoder(FFMPEG, preset="ultrafast", crf=18, skip_existing=False)
+    assert rec.run([job], 30)[0].status == "done"                # overwrite asked
     assert abs(probe_file(FFMPEG, job.dst).fps - 30) < 1e-6
 
 

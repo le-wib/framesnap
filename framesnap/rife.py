@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .core import IS_WINDOWS, bundle_roots, subprocess_kwargs
+from .core import IS_WINDOWS, bundle_roots, popen, release
 
 RIFE_EXE = "rife-ncnn-vulkan.exe" if IS_WINDOWS else "rife-ncnn-vulkan"
 MODEL_NAME = "rife-v4.6"
@@ -123,12 +123,21 @@ class Rife:
         cmd = [str(self.exe), "-m", str(self.model), "-0", str(a_path), "-1", str(b_path),
                "-o", str(out), "-s", "%.4f" % t] + _extra_args()
         try:
-            r = subprocess.run(cmd, cwd=str(self.exe.parent), stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                               encoding="utf-8", errors="replace", timeout=self.timeout,
-                               **subprocess_kwargs())
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            proc = popen(cmd, cwd=str(self.exe.parent), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         encoding="utf-8", errors="replace")
+        except OSError as exc:
             raise RifeError("rife could not run: %s" % exc)
+        try:
+            try:
+                out_text, err_text = proc.communicate(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise RifeError("rife could not run: no answer after %d s" % self.timeout)
+        finally:
+            release(proc)
+        r = subprocess.CompletedProcess(cmd, proc.returncode, out_text, err_text)
         log = (r.stderr or "") + (r.stdout or "")
         if not self.device:
             self.device = _device_from_log(log)

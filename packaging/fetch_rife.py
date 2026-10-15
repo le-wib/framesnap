@@ -68,15 +68,19 @@ def main() -> int:
             return 1
         wanted_exact = {exe, "LICENSE", "README.md", "vcomp140.dll"}
         dest.mkdir(parents=True, exist_ok=True)
+        root = dest.resolve()
         n = 0
         with zipfile.ZipFile(zpath) as z:
             for info in z.infolist():
                 if info.is_dir():
                     continue
-                parts = info.filename.split("/", 1)
+                parts = info.filename.replace("\\", "/").split("/", 1)
                 rel = parts[1] if len(parts) == 2 else parts[0]
                 if rel in wanted_exact or rel.startswith(MODEL + "/"):
-                    target = dest / rel
+                    target = (dest / rel).resolve()
+                    if root not in target.parents:     # "rife-v4.6/../../x": never outside dest
+                        print("ERROR: unsafe path in the zip: %s" % info.filename)
+                        return 1
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(info) as src, open(target, "wb") as out:
                         shutil.copyfileobj(src, out)

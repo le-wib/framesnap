@@ -3,7 +3,9 @@
 # Usage: packaging/make_icns.sh packaging/icon.png build/icon.icns
 set -euo pipefail
 SRC="$1"; OUT="$2"
-SET="$(mktemp -d)/icon.iconset"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+SET="$WORK/icon.iconset"
 mkdir -p "$SET" "$(dirname "$OUT")"
 for s in 16 32 128 256 512; do
   sips -z $s $s "$SRC" --out "$SET/icon_${s}x${s}.png" >/dev/null

@@ -8,7 +8,8 @@ const { JSDOM } = require("jsdom");
 const html = fs.readFileSync(path.join(__dirname, "..", "..", "framesnap", "ui", "index.html"), "utf8");
 const tick = (ms) => new Promise((r) => setTimeout(r, ms || 15));
 
-function load(language, timelines) {
+// answers: optional { api_name: (...args) => value or promise } for the other API calls
+function load(language, timelines, answers) {
   const calls = [];
   const dom = new JSDOM(html, {
     runScripts: "dangerously",
@@ -19,6 +20,7 @@ function load(language, timelines) {
         api: new Proxy({}, {
           get: (_, name) => (...a) => {
             calls.push([name, ...a]);
+            if (answers && answers[name]) return Promise.resolve(answers[name](...a));
             if (name === "get_timeline") return Promise.resolve((timelines || {})[a[0]] || null);
             return Promise.resolve();
           },
@@ -442,4 +444,168 @@ test("the tooltip can be shown from code, like a mouse move", async () => {
   window.__framesnap.hover(3 / 121);
   assert.equal(doc.getElementById("tltip").style.display, "block");
   assert.ok(doc.getElementById("tltip").textContent.includes("shown twice"));
+});
+
+// ------------------------------------------------------------------ 2.3: preview
+function fakeVideo(doc, seconds) {
+  // jsdom does not play media: give the element a duration and a settable position
+  const vid = doc.getElementById("preview");
+  Object.defineProperty(vid, "duration", { value: seconds, configurable: true });
+  Object.defineProperty(vid, "currentTime", { value: 0, writable: true, configurable: true });
+  return vid;
+}
+const URL1 = "http://127.0.0.1:5000/v/token-one";
+
+test("the preview streams the selected clip and is unloaded when the list is cleared", async () => {
+  const { window, doc, calls } = load("en", { 1: TL() }, { get_video_path: () => URL1 });
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  const vid = doc.getElementById("preview");
+  assert.equal(vid.getAttribute("src"), URL1);
+  assert.ok(doc.getElementById("previewWrap").classList.contains("visible"));
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  assert.equal(calls.filter((c) => c[0] === "get_video_path").length, 1);   // not asked again
+  window.render(base({ items: [] }));
+  assert.equal(vid.getAttribute("src"), null);
+  assert.ok(!doc.getElementById("previewWrap").classList.contains("visible"));
+});
+
+test("a late answer for a clip that is no longer selected is ignored", async () => {
+  const pending = {};
+  const { window, doc } = load("en", {}, { get_video_path: (id) => new Promise((r) => { pending[id] = r; }) });
+  window.render(base({ items: [item({ id: 1 }), item({ id: 2, name: "b.mp4" })] }));
+  doc.querySelector('#list li[data-id="2"]').click();
+  await tick();
+  pending[2]("http://127.0.0.1:5000/v/two");
+  await tick();
+  pending[1]("http://127.0.0.1:5000/v/one");
+  await tick();
+  assert.equal(doc.getElementById("preview").getAttribute("src"), "http://127.0.0.1:5000/v/two");
+});
+
+test("one set of video controls, plus frame by frame stepping", async () => {
+  const { window, doc } = load("en", { 1: TL() }, { get_video_path: () => URL1 });
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  const vid = fakeVideo(doc, 5.04);
+  assert.ok(vid.hasAttribute("controls"));
+  assert.equal(doc.getElementById("seekbar"), null);
+  assert.equal(doc.getElementById("playPause"), null);
+  vid.dispatchEvent(new window.Event("loadedmetadata"));
+  assert.ok(doc.getElementById("previewFrame").textContent.startsWith("frame 0 / 121"));
+  doc.getElementById("frameNext").click();
+  assert.equal(vid.currentTime, 1.5 / 24);                 // the middle of frame 1
+  doc.getElementById("frameNext").click();
+  doc.getElementById("framePrev").click();
+  assert.equal(vid.currentTime, 1.5 / 24);
+  assert.ok(doc.getElementById("previewFrame").textContent.startsWith("frame 1 / 121"));
+  doc.querySelector('#flagList li[data-frame="20"] .flag-seek').click();
+  assert.equal(vid.currentTime, 20.5 / 24);
+  assert.ok(doc.querySelector('#flagList li[data-frame="20"]').classList.contains("hl"));
+  assert.ok(!doc.querySelector('#flagList li[data-frame="21"]').classList.contains("hl"));
+});
+
+test("the frame readout is translated", async () => {
+  const { window, doc } = load("fr-FR", { 1: TL() }, { get_video_path: () => URL1 });
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  fakeVideo(doc, 5.04).dispatchEvent(new window.Event("loadedmetadata"));
+  assert.ok(doc.getElementById("previewFrame").textContent.startsWith("image 0 / 121"));
+  assert.equal(doc.getElementById("frameNext").title, "Image suivante");
+});
+
+// ------------------------------------------------------------------ 2.3: manual edits
+test("held frames can be added (by number or at the video position) and removed", async () => {
+  const { window, doc, calls } = load("en", { 1: TL() }, { get_video_path: () => URL1 });
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  const sent = () => calls.filter((c) => c[0] === "set_flags").map((c) => [...c[2]]);   // arrays of the page realm
+  doc.getElementById("flagInput").value = "50";
+  doc.getElementById("flagAddBtn").click();
+  doc.getElementById("flagInput").value = "500";           // beyond the last frame: ignored
+  doc.getElementById("flagAddBtn").click();
+  doc.querySelector('#flagList li[data-frame="7"] .flag-rm').click();
+  const vid = fakeVideo(doc, 5.04);
+  vid.currentTime = 10.3 / 24;
+  vid.dispatchEvent(new window.Event("timeupdate"));
+  doc.getElementById("flagAddCur").click();
+  assert.deepEqual(sent(), [
+    [3, 7, 20, 21, 40, 41, 42, 50],
+    [3, 20, 21, 40, 41, 42],
+    [3, 7, 10, 20, 21, 40, 41, 42],
+  ]);
+});
+
+test("the answer of an edit redraws the timeline without asking for it again", async () => {
+  const edited = TL({ runs: [[3, 1]], counts: { double: 1, triple: 0, more: 0 }, v: 5, manual: true });
+  const { window, doc, calls } = load("en", { 1: TL() }, { set_flags: () => edited });
+  window.render(base({ items: [item({ id: 1 })] }));
+  await tick();
+  doc.querySelector('#flagList li[data-frame="7"] .flag-rm').click();
+  await tick();
+  assert.equal(doc.querySelectorAll("#tlsvg rect").length, 1);
+  window.render(base({ items: [item({ id: 1, tl_v: 5, manual: true, dups: 1 })] }));
+  await tick();
+  assert.equal(calls.filter((c) => c[0] === "get_timeline").length, 1);
+});
+
+test("hand edited clips say so and can go back to the detection", async () => {
+  const { window, doc, calls } = load("en", { 1: TL({ manual: true }), 2: TL() });
+  window.render(base({ items: [item({ id: 1, manual: true }), item({ id: 2, name: "b.mp4" })] }));
+  await tick();
+  assert.equal(doc.getElementById("flagManual").hidden, false);
+  assert.equal(doc.getElementById("flagManual").textContent, "edited by hand");
+  doc.getElementById("flagReset").click();
+  assert.deepEqual(calls.at(-1), ["reset_flags", 1]);
+  doc.querySelector('#list li[data-id="2"]').click();
+  await tick();
+  assert.equal(doc.getElementById("flagManual").hidden, true);
+  assert.equal(doc.getElementById("flagReset").hidden, true);
+});
+
+// ------------------------------------------------------------------ 2.3: update check
+const NEWER = { current: "2.3.0", latest: "2.4.0", update_available: true, error: false,
+  url: "https://github.com/le-wib/framesnap/releases/tag/v2.4.0" };
+
+test("a newer release shows a banner that opens the release page", async () => {
+  const { window, doc, calls } = load("en", {}, { check_update: () => NEWER });
+  window.dispatchEvent(new window.Event("pywebviewready"));
+  await tick();
+  assert.ok(doc.getElementById("update-banner").classList.contains("visible"));
+  assert.equal(doc.getElementById("update-banner-text").textContent, "FrameSnap 2.4.0 is available.");
+  doc.getElementById("update-banner-link").click();
+  assert.deepEqual(calls.at(-1), ["open_url", NEWER.url]);
+  assert.equal(calls.filter((c) => c[0] === "check_update").length, 1);   // one request at start
+});
+
+test("the banner is translated", async () => {
+  const { window, doc } = load("fr-FR", {}, { check_update: () => NEWER });
+  window.dispatchEvent(new window.Event("pywebviewready"));
+  await tick();
+  assert.equal(doc.getElementById("update-banner-text").textContent, "FrameSnap 2.4.0 est disponible.");
+  assert.equal(doc.getElementById("update-banner-link").textContent, "Télécharger");
+  assert.equal(doc.getElementById("btn-check-update").title, "Vérifier les mises à jour");
+});
+
+test("up to date or offline: silent at start, explained after a manual check", async () => {
+  let answer = { current: "2.3.0", latest: "2.3.0", update_available: false, error: false, url: "" };
+  const { window, doc } = load("en", {}, { check_update: () => answer });
+  window.dispatchEvent(new window.Event("pywebviewready"));
+  await tick();
+  assert.ok(!doc.getElementById("update-banner").classList.contains("visible"));
+  assert.equal(doc.getElementById("update-note").textContent, "");
+  doc.getElementById("btn-check-update").click();
+  await tick();
+  assert.equal(doc.getElementById("update-note").textContent, "FrameSnap 2.3.0 is up to date.");
+  answer = { current: "2.3.0", latest: null, update_available: false, error: true, url: "" };
+  doc.getElementById("btn-check-update").click();
+  await tick();
+  assert.ok(doc.getElementById("update-note").textContent.startsWith("Could not check"));
+});
+
+test("the version is shown next to the name", () => {
+  const { window, doc } = load("en");
+  window.render(base({ version: "2.3.0" }));
+  assert.equal(doc.getElementById("ver").textContent.trim(), "2.3.0");
 });
