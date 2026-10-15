@@ -51,7 +51,7 @@ def _write(path, frames, extra=()):
     return path
 
 
-BT709 = ["-pix_fmt", "yuv420p", "-vf", "scale=out_color_matrix=bt709:out_range=tv",
+BT709 = ["-pix_fmt", "yuv420p", "-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
          "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
 
 
